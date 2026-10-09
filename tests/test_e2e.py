@@ -29,7 +29,7 @@ SERVER_SRC = ROOT / "ha_satellite/rootfs/opt/hasat/server"
 AGENT_SRC = ROOT / "ha_satellite/rootfs/opt/hasat/agent"
 
 TMP = Path(tempfile.mkdtemp(prefix="hasat-e2e-"))
-for sub in ("data", "etc", "state", "install"):
+for sub in ("data", "etc", "state", "install", "systemd"):
     (TMP / sub).mkdir()
 os.environ.update(
     HASAT_DATA_DIR=str(TMP / "data"),
@@ -37,6 +37,7 @@ os.environ.update(
     HASAT_ETC=str(TMP / "etc"),
     HASAT_STATE=str(TMP / "state"),
     HASAT_INSTALL_DIR=str(TMP / "install" / "hasat-agent"),
+    HASAT_SYSTEMD_DIR=str(TMP / "systemd"),
 )
 sys.path[:0] = [str(SERVER_SRC), str(AGENT_SRC)]
 
@@ -260,6 +261,7 @@ async def main() -> None:
     await asyncio.wait_for(restarted.wait(), 5)
     installed = TMP / "install" / "hasat-agent" / "hasat_agent" / "__init__.py"
     check(result.get("restarting") and installed.exists(), "agent bundle installed and restart triggered")
+    check((TMP / "systemd" / "hasat-agent.service").exists(), "systemd unit refreshed on update")
 
     print("home assistant mqtt discovery")
     published: dict = {}

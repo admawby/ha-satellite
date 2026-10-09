@@ -11,13 +11,12 @@ import shutil
 import ssl
 import subprocess
 import tarfile
-from pathlib import Path
 from typing import Any, Dict
 
 from aiohttp import web
 
 from . import __version__, firewall, metrics, serial_bridge, terminal, usb
-from .settings import (CA_FILE, CERT_FILE, INSTALL_DIR, KEY_FILE, load_config, load_settings,
+from .settings import (CA_FILE, CERT_FILE, INSTALL_DIR, KEY_FILE, SYSTEMD_DIR, load_config, load_settings,
                        merge_settings, save_settings)
 from .updates import Updater
 
@@ -217,12 +216,15 @@ class Agent:
             INSTALL_DIR.rename(backup)
         staging.rename(INSTALL_DIR)
         unit_src = INSTALL_DIR / "hasat-agent.service"
-        unit_dst = Path("/etc/systemd/system/hasat-agent.service")
+        unit_dst = SYSTEMD_DIR / "hasat-agent.service"
         if unit_dst.parent.is_dir() and unit_src.exists() and (
             not unit_dst.exists() or unit_src.read_bytes() != unit_dst.read_bytes()
         ):
             shutil.copy2(unit_src, unit_dst)
-            subprocess.run(["systemctl", "daemon-reload"], timeout=30)
+            try:
+                subprocess.run(["systemctl", "daemon-reload"], timeout=30)
+            except OSError as err:
+                _LOGGER.warning("daemon-reload failed: %s", err)
         _LOGGER.warning("Agent updated to %s; restarting", request.query.get("version", "?"))
         asyncio.get_running_loop().call_later(1.5, self.restart)
         return web.json_response({"ok": True, "restarting": True})

@@ -17,6 +17,7 @@ CERT_FILE = ETC / "agent.crt"
 KEY_FILE = ETC / "agent.key"
 CA_FILE = ETC / "ca.crt"
 INSTALL_DIR = Path(os.environ.get("HASAT_INSTALL_DIR", "/opt/hasat-agent"))
+SYSTEMD_DIR = Path(os.environ.get("HASAT_SYSTEMD_DIR", "/etc/systemd/system"))
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_update": {
