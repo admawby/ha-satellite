@@ -1,6 +1,6 @@
 # HA Satellite — Home Assistant add-on repository
 
-[![Open your Home Assistant instance and show the add add-on repository dialog with this repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FOWNER%2Fha-satellite)
+[![Open your Home Assistant instance and show the add add-on repository dialog with this repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fadmawby%2Fha-satellite)
 
 Turn Raspberry Pis around your home into managed **satellites** of your main Home
 Assistant instance — one add-on, installed from this repository.
@@ -22,7 +22,7 @@ Assistant instance — one add-on, installed from this repository.
 ## Installation
 
 1. **Settings → Add-ons → Add-on store → ⋮ → Repositories**, add
-   `https://github.com/OWNER/ha-satellite`
+   `https://github.com/admawby/ha-satellite`
 2. Install **HA Satellite**, start it, enable **Show in sidebar**
 3. Open **Satellites → Add satellite** and adopt your Pi
 

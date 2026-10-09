@@ -28,7 +28,7 @@ The Pi needs internet access during installation (it installs `python3-aiohttp`,
 ## Installation
 
 1. In Home Assistant go to **Settings → Add-ons → Add-on store → ⋮ → Repositories**
-   and add `https://github.com/OWNER/ha-satellite`.
+   and add `https://github.com/admawby/ha-satellite`.
 2. Install **HA Satellite**, start it and enable **Show in sidebar**.
 3. Open **Satellites** and click **Add satellite**.
 

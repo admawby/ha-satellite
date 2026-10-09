@@ -1,6 +1,6 @@
 [Unit]
 Description=HA Satellite agent
-Documentation=https://github.com/OWNER/ha-satellite
+Documentation=https://github.com/admawby/ha-satellite
 After=network-online.target
 Wants=network-online.target
 

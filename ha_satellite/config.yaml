@@ -5,7 +5,7 @@ description: >-
   Adopt remote Raspberry Pis as satellites of this Home Assistant instance:
   remote Z-Wave/Zigbee USB sticks, health sensors, a web terminal and
   automatic package updates — all over mutually-authenticated TLS.
-url: https://github.com/OWNER/ha-satellite
+url: https://github.com/admawby/ha-satellite
 arch:
   - aarch64
   - amd64
