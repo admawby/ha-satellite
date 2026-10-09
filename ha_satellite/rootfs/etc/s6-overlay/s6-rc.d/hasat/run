@@ -1,0 +1,5 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+bashio::log.info "Starting HA Satellite manager..."
+cd /opt/hasat/server || bashio::exit.nok "Server files missing"
+exec python3 -m hasat

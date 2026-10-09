@@ -1,0 +1,50 @@
+name: HA Satellite
+version: "0.1.0"
+slug: ha_satellite
+description: >-
+  Adopt remote Raspberry Pis as satellites of this Home Assistant instance:
+  remote Z-Wave/Zigbee USB sticks, health sensors, a web terminal and
+  automatic package updates — all over mutually-authenticated TLS.
+url: https://github.com/OWNER/ha-satellite
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: auto
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:satellite-uplink
+panel_title: Satellites
+homeassistant_api: true
+hassio_api: true
+hassio_role: default
+services:
+  - mqtt:want
+ports:
+  8766/tcp: 8766
+ports_description:
+  8766/tcp: Satellite enrollment (TLS, one-time tokens only)
+options:
+  enrollment_host: ""
+  allowed_networks:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+  extra_trusted_ips: []
+  agent_port: 8765
+  poll_interval: 30
+  auto_update_agents: true
+  publish_to_ha: true
+  log_level: info
+schema:
+  enrollment_host: str?
+  allowed_networks:
+    - str
+  extra_trusted_ips:
+    - str
+  agent_port: port
+  poll_interval: int(10,3600)
+  auto_update_agents: bool
+  publish_to_ha: bool
+  log_level: list(debug|info|warning|error)

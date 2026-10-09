@@ -1,0 +1,22 @@
+[Unit]
+Description=HA Satellite agent
+Documentation=https://github.com/OWNER/ha-satellite
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hasat-agent
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m hasat_agent
+Restart=always
+RestartSec=3
+# Runs as root on purpose: it manages packages, USB devices, ser2net, the firewall,
+# reboots and the remote shell. It only accepts connections authenticated with the
+# manager's client certificate. No filesystem sandboxing either, because the web
+# terminal is a child of this service and must see the real system.
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+configuration:
+  enrollment_host:
+    name: Enrollment host
+    description: >-
+      LAN IP or hostname satellites use to reach Home Assistant. Leave empty to
+      detect it automatically.
+  allowed_networks:
+    name: Allowed networks
+    description: >-
+      Satellites can only be adopted or enrolled from these networks (CIDR).
+  extra_trusted_ips:
+    name: Extra trusted IPs
+    description: >-
+      Additional source addresses allowed through each satellite's firewall.
+  agent_port:
+    name: Agent port
+    description: TCP port the satellite agent listens on (new satellites only).
+  poll_interval:
+    name: Poll interval
+    description: Seconds between health polls of each satellite.
+  auto_update_agents:
+    name: Auto-update agents
+    description: Push the agent bundled with this add-on to outdated satellites.
+  publish_to_ha:
+    name: Publish to Home Assistant
+    description: Create entities for each satellite (MQTT discovery or REST).
+  log_level:
+    name: Log level
+network:
+  8766/tcp: Satellite enrollment (TLS, one-time tokens only)

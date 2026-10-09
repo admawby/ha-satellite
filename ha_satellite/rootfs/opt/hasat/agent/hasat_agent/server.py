@@ -1,0 +1,294 @@
+"""Agent HTTPS API. Every request must present the manager's CA-signed client certificate."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import logging
+import os
+import re
+import shutil
+import ssl
+import subprocess
+import tarfile
+from pathlib import Path
+from typing import Any, Dict
+
+from aiohttp import web
+
+from . import __version__, firewall, metrics, serial_bridge, terminal, usb
+from .settings import (CA_FILE, CERT_FILE, INSTALL_DIR, KEY_FILE, load_config, load_settings,
+                       merge_settings, save_settings)
+from .updates import Updater
+
+_LOGGER = logging.getLogger(__name__)
+_UNIT_RE = re.compile(r"^[A-Za-z0-9@_.:-]{1,64}$")
+
+
+def _ssl_context() -> ssl.SSLContext:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
+    ctx.load_verify_locations(cafile=str(CA_FILE))
+    ctx.verify_mode = ssl.CERT_REQUIRED  # mutual TLS: no client cert, no connection
+    return ctx
+
+
+def _peer_cn(request: web.Request) -> str:
+    cert = request.transport.get_extra_info("peercert") if request.transport else None
+    for rdn in (cert or {}).get("subject", ()):
+        for key, value in rdn:
+            if key == "commonName":
+                return value
+    return ""
+
+
+def _delayed(cmd: list, delay: float = 2.0) -> None:
+    """Run a system command shortly after the HTTP response has been sent."""
+    asyncio.get_running_loop().call_later(delay, lambda: subprocess.Popen(cmd, start_new_session=True))
+
+
+class Agent:
+    def __init__(self) -> None:
+        self.config: Dict[str, Any] = load_config()
+        self.settings: Dict[str, Any] = load_settings()
+        self.updater = Updater(lambda: self.settings, self.reboot)
+        self.errors: Dict[str, str] = {}
+
+    # -------------------------------------------------------------- helpers
+    def restart(self) -> None:
+        """Exit; systemd (Restart=always) brings the agent back up on the new code."""
+        os._exit(0)
+
+    def reboot(self) -> None:
+        subprocess.Popen(["systemctl", "reboot"], start_new_session=True)
+
+    def apply_network(self) -> None:
+        """(Re)write ser2net and firewall state from settings."""
+        bridges = self.settings.get("serial", [])
+        err = serial_bridge.apply(bridges)
+        self._set_error("serial", err)
+        ports = [self.config["agent_port"]] + [b["port"] for b in bridges]
+        err = firewall.apply(self.settings.get("firewall_enabled", True), self.config.get("trusted_ips", []), ports)
+        self._set_error("firewall", err)
+
+    def _set_error(self, key: str, err: Any) -> None:
+        if err:
+            self.errors[key] = str(err)
+        else:
+            self.errors.pop(key, None)
+
+    def status(self) -> Dict[str, Any]:
+        data = metrics.collect()
+        data.update(
+            agent_version=__version__,
+            satellite_id=self.config.get("id"),
+            updates=dict(self.updater.status(), log=[]),  # full log via /api/updates
+            serial=serial_bridge.status(self.settings.get("serial", [])),
+            settings={k: v for k, v in self.settings.items() if k != "serial"},
+            radios=usb.serial_devices(),
+            errors=self.errors,
+        )
+        return data
+
+    # ------------------------------------------------------------- handlers
+    async def h_status(self, _r: web.Request) -> web.Response:
+        loop = asyncio.get_running_loop()
+        return web.json_response(await loop.run_in_executor(None, self.status))
+
+    async def h_usb(self, _r: web.Request) -> web.Response:
+        return web.json_response({"serial": usb.serial_devices(), "usb": usb.usb_tree()})
+
+    async def h_serial_get(self, _r: web.Request) -> web.Response:
+        return web.json_response(serial_bridge.status(self.settings.get("serial", [])))
+
+    async def h_serial_put(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        bridges = serial_bridge.validate(body.get("bridges", []), self.config["agent_port"])
+        self.settings["serial"] = bridges
+        save_settings(self.settings)
+        await asyncio.get_running_loop().run_in_executor(None, self.apply_network)
+        await asyncio.sleep(1)
+        return web.json_response({"bridges": serial_bridge.status(bridges), "errors": self.errors})
+
+    async def h_settings_get(self, _r: web.Request) -> web.Response:
+        return web.json_response(self.settings)
+
+    async def h_settings_put(self, request: web.Request) -> web.Response:
+        patch = await request.json()
+        self.settings = merge_settings(self.settings, patch)
+        save_settings(self.settings)
+        if "firewall_enabled" in patch:
+            await asyncio.get_running_loop().run_in_executor(None, self.apply_network)
+        return web.json_response(self.settings)
+
+    async def h_updates(self, _r: web.Request) -> web.Response:
+        return web.json_response(self.updater.status())
+
+    async def h_updates_check(self, _r: web.Request) -> web.Response:
+        return web.json_response(await self.updater.check())
+
+    async def h_updates_apply(self, _r: web.Request) -> web.Response:
+        # Long-running: start in the background, the UI polls /api/updates.
+        if self.updater.state.get("running"):
+            return web.json_response({"error": "update already running"}, status=409)
+        asyncio.ensure_future(self.updater.apply())
+        await asyncio.sleep(0.2)
+        return web.json_response(self.updater.status())
+
+    async def h_reboot(self, _r: web.Request) -> web.Response:
+        _LOGGER.warning("Reboot requested by manager")
+        _delayed(["systemctl", "reboot"])
+        return web.json_response({"ok": True})
+
+    async def h_shutdown(self, _r: web.Request) -> web.Response:
+        _LOGGER.warning("Shutdown requested by manager")
+        _delayed(["systemctl", "poweroff"])
+        return web.json_response({"ok": True})
+
+    async def h_service(self, request: web.Request) -> web.Response:
+        unit = request.match_info["unit"]
+        action = request.match_info["action"]
+        if not _UNIT_RE.match(unit) or action not in ("restart", "start", "stop"):
+            raise web.HTTPBadRequest()
+        if unit.startswith("hasat-agent"):
+            _delayed(["systemctl", action, unit])
+            return web.json_response({"ok": True, "deferred": True})
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", action, unit, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        out, _ = await proc.communicate()
+        return web.json_response({"ok": proc.returncode == 0, "output": out.decode(errors="replace")})
+
+    async def h_exec(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        command = str(body.get("command", ""))
+        timeout = max(1, min(int(body.get("timeout", 60)), 900))
+        if not command.strip():
+            raise web.HTTPBadRequest(text="command required")
+        _LOGGER.info("exec: %s", command)
+        proc = await asyncio.create_subprocess_exec(
+            "/bin/bash", "-lc", command,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL, start_new_session=True,
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+            rc = proc.returncode
+        except asyncio.TimeoutError:
+            os.killpg(proc.pid, 9)
+            out, rc = b"\n[timed out]", -1
+        text = out.decode(errors="replace")
+        if len(text) > 256 * 1024:
+            text = "[output truncated]\n" + text[-256 * 1024:]
+        return web.json_response({"rc": rc, "output": text})
+
+    async def h_logs(self, request: web.Request) -> web.Response:
+        unit = request.query.get("unit", "")
+        lines = max(10, min(int(request.query.get("lines", "200")), 5000))
+        cmd = ["journalctl", "--no-pager", "-o", "short-iso", "-n", str(lines)]
+        if unit:
+            if not _UNIT_RE.match(unit):
+                raise web.HTTPBadRequest()
+            cmd += ["-u", unit]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await proc.communicate()
+        return web.json_response({"output": out.decode(errors="replace")})
+
+    async def h_terminal(self, request: web.Request) -> web.WebSocketResponse:
+        return await terminal.handle(request, self.settings.get("terminal_user", "root"))
+
+    async def h_agent_update(self, request: web.Request) -> web.Response:
+        blob = await request.read()
+        staging = INSTALL_DIR.with_name("hasat-agent.new")
+        backup = INSTALL_DIR.with_name("hasat-agent.old")
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                target = (staging / member.name).resolve()
+                if not str(target).startswith(str(staging.resolve())) or member.issym() or member.islnk():
+                    raise web.HTTPBadRequest(text=f"unsafe archive member {member.name}")
+            tar.extractall(staging)
+        if not (staging / "hasat_agent" / "__init__.py").exists():
+            raise web.HTTPBadRequest(text="archive does not contain the agent")
+        shutil.rmtree(backup, ignore_errors=True)
+        if INSTALL_DIR.exists():
+            INSTALL_DIR.rename(backup)
+        staging.rename(INSTALL_DIR)
+        unit_src = INSTALL_DIR / "hasat-agent.service"
+        unit_dst = Path("/etc/systemd/system/hasat-agent.service")
+        if unit_dst.parent.is_dir() and unit_src.exists() and (
+            not unit_dst.exists() or unit_src.read_bytes() != unit_dst.read_bytes()
+        ):
+            shutil.copy2(unit_src, unit_dst)
+            subprocess.run(["systemctl", "daemon-reload"], timeout=30)
+        _LOGGER.warning("Agent updated to %s; restarting", request.query.get("version", "?"))
+        asyncio.get_running_loop().call_later(1.5, self.restart)
+        return web.json_response({"ok": True, "restarting": True})
+
+    async def h_uninstall(self, _r: web.Request) -> web.Response:
+        _LOGGER.warning("Uninstall requested by manager")
+        serial_bridge.restore()
+        firewall.remove()
+        script = (
+            "sleep 2; systemctl disable --now hasat-agent; "
+            "rm -f /etc/systemd/system/hasat-agent.service; systemctl daemon-reload; "
+            "rm -rf /opt/hasat-agent /opt/hasat-agent.old /etc/hasat-agent /var/lib/hasat-agent; "
+            "systemctl restart ser2net || true"
+        )
+        subprocess.Popen(["systemd-run", "--unit", "hasat-uninstall", "/bin/sh", "-c", script], start_new_session=True)
+        return web.json_response({"ok": True})
+
+    # ------------------------------------------------------------------ app
+    def build_app(self) -> web.Application:
+        controller_cn = self.config.get("controller_cn", "hasat-controller")
+
+        @web.middleware
+        async def auth(request: web.Request, handler):
+            cn = _peer_cn(request)
+            if cn != controller_cn:
+                _LOGGER.warning("Rejected request from %s with certificate CN=%r", request.remote, cn)
+                raise web.HTTPForbidden()
+            try:
+                return await handler(request)
+            except ValueError as err:
+                return web.json_response({"error": str(err)}, status=400)
+            except RuntimeError as err:
+                return web.json_response({"error": str(err)}, status=409)
+            except OSError as err:  # e.g. a system tool (journalctl, apt, nft) is missing
+                _LOGGER.warning("%s %s failed: %s", request.method, request.path, err)
+                return web.json_response({"error": str(err)}, status=500)
+
+        app = web.Application(middlewares=[auth], client_max_size=32 * 1024 * 1024)
+        r = app.router
+        r.add_get("/api/status", self.h_status)
+        r.add_get("/api/usb", self.h_usb)
+        r.add_get("/api/serial", self.h_serial_get)
+        r.add_put("/api/serial", self.h_serial_put)
+        r.add_get("/api/settings", self.h_settings_get)
+        r.add_put("/api/settings", self.h_settings_put)
+        r.add_get("/api/updates", self.h_updates)
+        r.add_post("/api/updates/check", self.h_updates_check)
+        r.add_post("/api/updates/apply", self.h_updates_apply)
+        r.add_post("/api/system/reboot", self.h_reboot)
+        r.add_post("/api/system/shutdown", self.h_shutdown)
+        r.add_post("/api/services/{unit}/{action}", self.h_service)
+        r.add_post("/api/exec", self.h_exec)
+        r.add_get("/api/logs", self.h_logs)
+        r.add_get("/api/terminal", self.h_terminal)
+        r.add_post("/api/agent/update", self.h_agent_update)
+        r.add_post("/api/agent/uninstall", self.h_uninstall)
+        return app
+
+    async def run(self) -> None:
+        metrics.prime()
+        await asyncio.get_running_loop().run_in_executor(None, self.apply_network)
+        asyncio.ensure_future(self.updater.scheduler())
+        runner = web.AppRunner(self.build_app(), access_log=None)
+        await runner.setup()
+        port = int(self.config["agent_port"])
+        site = web.TCPSite(runner, None, port, ssl_context=_ssl_context())
+        await site.start()
+        _LOGGER.info("HA Satellite agent %s listening on :%s (satellite %s)", __version__, port, self.config.get("id"))
+        await asyncio.Event().wait()
