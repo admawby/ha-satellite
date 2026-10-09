@@ -39,6 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Use a Docker Hub mirror (avoids anonymous pull rate limits)
+        run: .github/scripts/docker-mirror.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -49,10 +51,13 @@ jobs:
     name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         arch: [aarch64, amd64]
     steps:
       - uses: actions/checkout@v4
+      - name: Use a Docker Hub mirror (avoids anonymous pull rate limits)
+        run: .github/scripts/docker-mirror.sh
       - name: Test build
         uses: home-assistant/builder@2025.03.0
         with:
