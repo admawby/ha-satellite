@@ -6,6 +6,7 @@ import io
 import logging
 import ssl
 import tarfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,19 @@ class AgentClient:
                 return body
         except aiohttp.ClientConnectorCertificateError as err:
             raise AgentError(f"certificate rejected: {err.certificate_error}") from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise AgentError(str(err) or err.__class__.__name__) from err
+
+    @asynccontextmanager
+    async def raw(self, sat: Satellite, method: str, path: str, *, params: dict | None = None, data=None):
+        """Streaming request (file transfers): yields the raw aiohttp response."""
+        assert self._session is not None
+        try:
+            async with self._session.request(
+                method, self.base_url(sat) + path, params=params, data=data, server_hostname=sat.id,
+                timeout=aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=600),
+            ) as resp:
+                yield resp
         except (aiohttp.ClientError, TimeoutError) as err:
             raise AgentError(str(err) or err.__class__.__name__) from err
 

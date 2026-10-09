@@ -67,6 +67,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
 .stat { background: var(--surface-2); border-radius: 8px; padding: 8px; }
 .stat .v { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tf { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 5px; }
 .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .chip { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--surface-2); color: var(--muted); }

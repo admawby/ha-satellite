@@ -13,7 +13,7 @@ let term = null, termSocket = null, termFit = null, termResize = null;
 // ------------------------------------------------------------------ helpers
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtPct = (v) => (v == null ? "–" : `${Math.round(v)}%`);
-const fmtTemp = (v) => (v == null ? "–" : `${v.toFixed(1)}°C`);
+const fmtTemp = (v) => (v == null ? "–" : `${v.toFixed(1)}°C<span class="tf">${(v * 9 / 5 + 32).toFixed(0)}°F</span>`);
 const fmtBytes = (b) => { if (!b) return "–"; const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (b >= 1024 && i < 4) { b /= 1024; i++; } return `${b.toFixed(i ? 1 : 0)} ${u[i]}`; };
 const fmtDur = (s) => { if (s == null) return "–"; const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`; };
 const fmtAgo = (ts) => { if (!ts) return "never"; const s = Date.now() / 1000 - ts; return s < 90 ? "just now" : `${fmtDur(s)} ago`; };
@@ -187,7 +187,7 @@ async function startAdopt() {
 }
 
 // ------------------------------------------------------------------ detail
-const TABS = [["overview", "Overview"], ["radios", "USB radios"], ["terminal", "Terminal"], ["updates", "Updates"], ["docker", "Docker"], ["logs", "Logs"], ["settings", "Settings"]];
+const TABS = [["overview", "Overview"], ["radios", "USB and Storage"], ["terminal", "Terminal"], ["updates", "Updates"], ["docker", "Docker"], ["logs", "Logs"], ["settings", "Settings"]];
 
 function renderDetail() {
   const s = currentSat();
@@ -275,7 +275,208 @@ async function reboot() {
 }
 
 // ------------------------------------------------------------------ radios
+// ------------------------------------------------------------------ USB & storage tab
 async function tabRadios(el, s) {
+  el.innerHTML = `<div id="sec-radios"></div><div id="sec-storage" style="margin-top:14px"></div><div id="sec-files" style="margin-top:14px"></div>`;
+  const files = $("#sec-files");
+  const browse = (path) => { renderFiles(files, path); files.scrollIntoView({ behavior: "smooth", block: "start" }); };
+  renderRadios($("#sec-radios"), s);
+  renderStorage($("#sec-storage"), browse);
+  renderFiles(files, "/");
+}
+
+async function renderStorage(el, browse) {
+  el.innerHTML = `<div class="card muted">Reading drives…</div>`;
+  let data;
+  try { data = await satApi("storage"); } catch (e) { el.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; return; }
+  const devs = data.devices.filter((d) => d.type === "disk" || d.type === "part");
+  const row = (d) => {
+    const mounted = d.mountpoint ? `<span class="mono">${esc(d.mountpoint)}</span>${d.percent != null ? `<div class="muted" style="font-size:12px">${fmtBytes(d.used)} used · ${fmtBytes(d.free)} free</div>${bar(d.percent, 80, 92)}` : ""}` : '<span class="muted">not mounted</span>';
+    const name = d.type === "disk" ? `<b>${esc(d.path)}</b>` : `<span style="padding-left:14px">└ ${esc(d.path)}</span>`;
+    const desc = [d.label, d.type === "disk" ? [d.vendor, d.model].filter(Boolean).join(" ") : null].filter(Boolean).join(" · ");
+    const actions = [
+      d.can_mount ? `<button class="btn small" data-mount="${esc(d.path)}">Mount</button>` : "",
+      d.can_unmount ? `<button class="btn small" data-unmount="${esc(d.mountpoint)}">Unmount</button>` : "",
+      d.mountpoint ? `<button class="btn small" data-browse="${esc(d.mountpoint)}">Browse</button>` : "",
+    ].join(" ");
+    return `<tr><td>${name}${desc ? `<div class="muted" style="font-size:12px">${esc(desc)}</div>` : ""}</td>
+      <td>${d.usb ? '<span class="chip ok">USB</span> ' : ""}${d.removable && !d.usb ? '<span class="chip">removable</span>' : ""}</td>
+      <td class="mono">${esc(d.fstype || "–")}</td><td>${fmtBytes(d.size)}</td><td style="min-width:180px">${mounted}</td>
+      <td style="white-space:nowrap;text-align:right">${actions}</td></tr>`;
+  };
+  el.innerHTML = `
+    <div class="card">
+      <div class="row" style="margin-bottom:8px"><h4 style="margin:0">Drives &amp; USB storage</h4><span class="spacer"></span><button class="btn small" id="st-refresh">Refresh</button></div>
+      ${devs.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Device</th><th></th><th>File system</th><th>Size</th><th>Mounted at</th><th></th></tr></thead>
+        <tbody>${devs.map(row).join("")}</tbody></table></div>` : '<p class="muted">No block devices reported (lsblk unavailable).</p>'}
+      <p class="muted" style="margin-bottom:0">USB drives are mounted under <code>${esc(data.mount_base)}/&lt;label&gt;</code>. Unmount before unplugging. Mounts made here do not persist across reboots.</p>
+    </div>`;
+  $("#st-refresh").onclick = () => renderStorage(el, browse);
+  el.querySelectorAll("[data-browse]").forEach((b) => (b.onclick = () => browse(b.dataset.browse)));
+  el.querySelectorAll("[data-mount]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try { const r = await satApi("storage/mount", { method: "POST", body: { device: b.dataset.mount } }); toast(`Mounted at ${r.mountpoint}`); renderStorage(el, browse); browse(r.mountpoint); }
+    catch (e) { toast(e.message, 6000); b.disabled = false; }
+  }));
+  el.querySelectorAll("[data-unmount]").forEach((b) => (b.onclick = async () => {
+    if (!confirm(`Unmount ${b.dataset.unmount}?`)) return;
+    b.disabled = true;
+    try { await satApi("storage/unmount", { method: "POST", body: { mountpoint: b.dataset.unmount } }); toast("Unmounted — safe to unplug"); renderStorage(el, browse); }
+    catch (e) { toast(e.message, 6000); b.disabled = false; }
+  }));
+}
+
+const joinPath = (dir, name) => (dir === "/" ? "/" + name : `${dir}/${name}`);
+const fileUrl = (kind, path, extra = "") => `${BASE}api/sat/${state.current}/files/${kind}?path=${encodeURIComponent(path)}${extra}`;
+const fmtDate = (ts) => (ts ? new Date(ts * 1000).toLocaleString([], { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "–");
+
+function downloadFile(path) {
+  const a = document.createElement("a");
+  a.href = fileUrl("download", path);
+  a.download = path.split("/").pop();
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+async function renderFiles(el, path) {
+  let data;
+  try { data = await satApi(`files/list?path=${encodeURIComponent(path)}`); }
+  catch (e) {
+    if (path !== "/") { toast(e.message, 5000); return renderFiles(el, "/"); }
+    el.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; return;
+  }
+  const cur = data.path;
+  const crumbs = cur.split("/").filter(Boolean);
+  const crumbHtml = [`<a href="#" data-go="/">/</a>`].concat(crumbs.map((c, i) => `<a href="#" data-go="${esc("/" + crumbs.slice(0, i + 1).join("/"))}">${esc(c)}</a>`)).join('<span class="muted"> / </span>');
+  const icon = (e) => (e.type === "dir" || e.target_is_dir ? "📁" : e.type === "link" ? "🔗" : "📄");
+  el.innerHTML = `
+    <div class="card">
+      <div class="row" style="margin-bottom:8px">
+        <h4 style="margin:0">Files</h4>
+        <span class="muted">${data.usage ? `${fmtBytes(data.usage.free)} free of ${fmtBytes(data.usage.total)}` : ""}</span>
+        <span class="spacer"></span>
+        ${data.quick_links.map((p) => `<button class="btn small" data-go="${esc(p)}">${esc(p)}</button>`).join("")}
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <button class="btn small" id="f-up" ${data.parent == null ? "disabled" : ""}>↑ Up</button>
+        <input type="text" id="f-path" class="mono" value="${esc(cur)}" style="flex:1;min-width:200px" spellcheck="false">
+        <button class="btn small" id="f-refresh">Refresh</button>
+        <button class="btn small" id="f-mkdir">New folder</button>
+        <button class="btn small" id="f-new">New file</button>
+        <button class="btn small primary" id="f-upload">Upload</button>
+        <input type="file" id="f-input" multiple hidden>
+      </div>
+      <div class="muted" style="margin-bottom:6px">${crumbHtml}</div>
+      <div style="overflow-x:auto;max-height:560px;overflow-y:auto"><table>
+        <thead><tr><th>Name</th><th style="text-align:right">Size</th><th>Modified</th><th>Permissions</th><th>Owner</th><th></th></tr></thead>
+        <tbody>${data.entries.map((e, i) => `<tr>
+          <td><a href="#" data-open="${i}">${icon(e)} ${esc(e.name)}</a>${e.type === "link" ? `<span class="muted"> → ${esc(e.target)}</span>` : ""}</td>
+          <td style="text-align:right;white-space:nowrap">${e.type === "dir" ? "–" : fmtBytes(e.size)}</td>
+          <td style="white-space:nowrap">${fmtDate(e.mtime)}</td>
+          <td class="mono">${esc(e.mode)}</td><td class="mono">${esc(e.owner)}</td>
+          <td style="white-space:nowrap;text-align:right">
+            ${e.type === "file" ? `<button class="btn small" data-dl="${i}">Download</button>` : ""}
+            <button class="btn small" data-ren="${i}">Rename</button>
+            <button class="btn small danger" data-del="${i}">Delete</button></td></tr>`).join("") || '<tr><td colspan="6" class="muted">Empty folder</td></tr>'}
+        </tbody></table></div>
+      ${data.truncated ? '<p class="warn">Only the first 5000 entries are shown.</p>' : ""}
+    </div>`;
+
+  const go = (p) => renderFiles(el, p);
+  el.querySelectorAll("[data-go]").forEach((a) => (a.onclick = (ev) => { ev.preventDefault(); go(a.dataset.go); }));
+  $("#f-up").onclick = () => data.parent != null && go(data.parent);
+  $("#f-refresh").onclick = () => go(cur);
+  $("#f-path").onkeydown = (ev) => { if (ev.key === "Enter") go($("#f-path").value.trim() || "/"); };
+  $("#f-mkdir").onclick = async () => {
+    const name = prompt("New folder name"); if (!name) return;
+    try { await satApi("files/mkdir", { method: "POST", body: { path: joinPath(cur, name) } }); go(cur); } catch (e) { toast(e.message, 5000); }
+  };
+  $("#f-new").onclick = async () => {
+    const name = prompt("New file name"); if (!name) return;
+    const p = joinPath(cur, name);
+    try { await satApi("files/write", { method: "PUT", body: { path: p, content: "", create: true } }); await go(cur); openEditor(p, () => go(cur)); } catch (e) { toast(e.message, 5000); }
+  };
+  $("#f-upload").onclick = () => $("#f-input").click();
+  $("#f-input").onchange = async () => {
+    const list = [...$("#f-input").files];
+    for (const [i, f] of list.entries()) {
+      toast(`Uploading ${f.name} (${i + 1}/${list.length})…`, 60000);
+      let res = await fetch(fileUrl("upload", joinPath(cur, f.name)), { method: "POST", body: f });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))).error || res.statusText;
+        if (/already exists/.test(err) && confirm(`${f.name} already exists. Overwrite?`)) {
+          res = await fetch(fileUrl("upload", joinPath(cur, f.name), "&overwrite=1"), { method: "POST", body: f });
+        } else { toast(`${f.name}: ${err}`, 6000); continue; }
+      }
+      if (!res.ok) toast(`${f.name}: ${(await res.json().catch(() => ({}))).error || res.statusText}`, 6000);
+    }
+    toast(`Upload finished`);
+    go(cur);
+  };
+  el.querySelectorAll("[data-open]").forEach((a) => (a.onclick = (ev) => {
+    ev.preventDefault();
+    const e = data.entries[+a.dataset.open];
+    const p = joinPath(cur, e.name);
+    if (e.type === "dir" || e.target_is_dir) go(p); else openEditor(p, () => go(cur));
+  }));
+  el.querySelectorAll("[data-dl]").forEach((b) => (b.onclick = () => downloadFile(joinPath(cur, data.entries[+b.dataset.dl].name))));
+  el.querySelectorAll("[data-ren]").forEach((b) => (b.onclick = async () => {
+    const e = data.entries[+b.dataset.ren];
+    const name = prompt(`Rename ${e.name} to`, e.name); if (!name || name === e.name) return;
+    try { await satApi("files/rename", { method: "POST", body: { from: joinPath(cur, e.name), to: name.startsWith("/") ? name : joinPath(cur, name) } }); go(cur); }
+    catch (err) { toast(err.message, 5000); }
+  }));
+  el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
+    const e = data.entries[+b.dataset.del];
+    const isDir = e.type === "dir";
+    if (!confirm(`Delete ${isDir ? "folder" : "file"} ${joinPath(cur, e.name)}${isDir ? " and everything in it" : ""}? This cannot be undone.`)) return;
+    try { await satApi("files/delete", { method: "POST", body: { path: joinPath(cur, e.name), recursive: isDir } }); toast("Deleted"); go(cur); }
+    catch (err) { toast(err.message, 5000); }
+  }));
+}
+
+async function openEditor(path, onClose) {
+  let f;
+  try { f = await satApi(`files/read?path=${encodeURIComponent(path)}`); } catch (e) { toast(e.message, 5000); return; }
+  modal.style.width = "min(1100px, calc(100vw - 32px))";
+  modalBody.innerHTML = `
+    <h3 class="mono" style="overflow-wrap:anywhere">${esc(path)}</h3>
+    <div class="muted" style="margin-bottom:8px">${fmtBytes(f.size) || "0 B"} · ${esc(f.mode)} · modified ${fmtDate(f.mtime)}</div>
+    ${f.editable ? `<textarea id="ed-text" class="mono" rows="24" spellcheck="false" style="white-space:pre;tab-size:4"></textarea>
+      <div class="muted" style="font-size:12px;margin-top:4px">Ctrl+S to save</div>` : `<p class="warn">${esc(f.reason)}</p>`}
+    <div class="modal-actions">
+      <button type="button" class="btn" id="ed-dl">Download</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="ed-close">Close</button>
+      ${f.editable ? '<button type="button" class="btn primary" id="ed-save">Save</button>' : ""}
+    </div>`;
+  let mtime = f.mtime, dirty = false;
+  const close = () => {
+    if (dirty && !confirm("Discard unsaved changes?")) return;
+    modal.oncancel = null; modal.close(); modal.style.width = ""; onClose && onClose();
+  };
+  $("#ed-close").onclick = close;
+  $("#ed-dl").onclick = () => downloadFile(path);
+  if (f.editable) {
+    const ta = $("#ed-text");
+    ta.value = f.content;
+    ta.oninput = () => (dirty = true);
+    const save = async () => {
+      try {
+        const r = await satApi("files/write", { method: "PUT", body: { path, content: ta.value, expect_mtime: mtime } });
+        mtime = r.mtime; dirty = false; toast(`Saved ${fmtBytes(r.size) || "0 B"}`);
+      } catch (e) { toast(e.message, 6000); }
+    };
+    $("#ed-save").onclick = save;
+    ta.onkeydown = (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") { ev.preventDefault(); save(); }
+      if (ev.key === "Tab") { ev.preventDefault(); const s0 = ta.selectionStart; ta.setRangeText("\t", s0, ta.selectionEnd, "end"); dirty = true; }
+    };
+  }
+  modal.oncancel = (ev) => { ev.preventDefault(); close(); };
+  modal.showModal();
+}
+
+async function renderRadios(el, s) {
   el.innerHTML = `<div class="card muted">Scanning USB devices…</div>`;
   let usb, bridges;
   try { [usb, bridges] = await Promise.all([satApi("usb"), satApi("serial")]); } catch (e) { el.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; return; }
@@ -330,7 +531,7 @@ async function tabRadios(el, s) {
       const b = bridges[+inp.dataset.i], f = inp.dataset.f;
       b[f] = inp.type === "checkbox" ? inp.checked : (f === "port" || f === "baud") ? +inp.value : inp.value;
     }));
-    $("#r-refresh").onclick = () => tabRadios(el, s);
+    $("#r-refresh").onclick = () => renderRadios(el, s);
     $("#r-save").onclick = async () => {
       try {
         const payload = bridges.map(({ name, device, port, baud, rtscts, enabled }) => ({ name, device, port, baud, rtscts, enabled }));
@@ -453,7 +654,49 @@ async function tabDocker(el) {
   let data;
   try { data = await satApi("docker"); } catch (e) { el.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; return; }
   if (!data.available) {
-    el.innerHTML = `<div class="card"><h4>Docker</h4><p class="muted">Docker is not installed or its socket (<code>/var/run/docker.sock</code>) is not available on this satellite.</p></div>`;
+    const job = data.job || {};
+    const busy = job.running === "install";
+    el.innerHTML = `
+      <div class="two">
+        <div class="card">
+          <h4>Docker</h4>
+          ${data.installed
+            ? `<p>Docker is installed but its daemon is not running.</p>
+               <button class="btn primary" id="dk-start" ${busy ? "disabled" : ""}>Start Docker</button>`
+            : `<p class="muted">Docker is not installed on this satellite.</p>
+               <label class="field"><span>Install from</span>
+                 <select id="dk-method">
+                   <option value="official">Docker's official script (get.docker.com): latest Docker CE + compose plugin</option>
+                   <option value="debian">Raspberry Pi OS / Debian package (docker.io): older, distro-maintained</option>
+                 </select></label>
+               <button class="btn primary" id="dk-install" ${busy ? "disabled" : ""}>${busy ? "Installing…" : "Install Docker"}</button>
+               <p class="muted" style="margin-bottom:0">Takes a few minutes and needs internet access on the Pi. The Docker service is enabled to start on boot.</p>`}
+        </div>
+        <div class="card">
+          <h4>Install log</h4>
+          <div class="muted" id="dk-result">${busy ? '<span class="warn">Running…</span>' : esc(job.last_result || "")}</div>
+          <pre class="out" id="dk-log" style="margin-top:8px;max-height:360px">${esc((job.log || []).join("\n") || "–")}</pre>
+        </div>
+      </div>`;
+    const run = async (method) => {
+      if (method !== "start" && !confirm("Install Docker on this satellite now?")) return;
+      try { await satApi("docker/install", { method: "POST", body: { method } }); toast(method === "start" ? "Starting Docker…" : "Installing Docker…"); }
+      catch (e) { toast(e.message, 6000); }
+      tabDocker(el);
+    };
+    if ($("#dk-install")) $("#dk-install").onclick = () => run($("#dk-method").value);
+    if ($("#dk-start")) $("#dk-start").onclick = () => run("start");
+    every(3000, async () => {
+      if (state.tab !== "docker") return;
+      try {
+        const d = await satApi("docker");
+        if (d.available) { clearTimers(); toast("Docker is ready"); return tabDocker(el); }
+        const j = d.job || {};
+        const log = $("#dk-log"); if (log) { log.textContent = (j.log || []).join("\n") || "–"; log.scrollTop = log.scrollHeight; }
+        const res = $("#dk-result"); if (res) res.innerHTML = j.running ? '<span class="warn">Running…</span>' : esc(j.last_result || "");
+        const btn = $("#dk-install"); if (btn) { btn.disabled = !!j.running; btn.textContent = j.running ? "Installing…" : "Install Docker"; }
+      } catch { /* agent busy or restarting */ }
+    });
     return;
   }
   const cfg = data.settings;

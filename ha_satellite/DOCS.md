@@ -11,7 +11,8 @@ instance. From the **Satellites** panel in the sidebar you can:
 - Use a **web terminal** (full interactive shell) and a quick command runner
 - **Update packages** on demand or automatically in a maintenance window
 - **Manage Docker containers** (start/stop/restart, logs) and keep their images
-  updated automatically on a separate schedule
+  updated automatically on a separate schedule, or install Docker with one click
+- **Browse and edit files**, upload/download, and mount USB drives
 - **Reboot / shut down**, restart services and read the system journal
 - Keep the satellite **agent up to date automatically** when the add-on is updated
 
@@ -73,6 +74,33 @@ sometimes need **RTS/CTS** enabled; Z-Wave sticks use `115200`.
 > Use one bridge per stick and only one integration per stick. Networked radios
 > work very well on a wired or stable Wi-Fi LAN; give the Pi a fixed IP.
 
+## USB and Storage tab
+
+Besides the radio list and network bridges described above, this tab shows:
+
+**Drives & USB storage**: every disk and partition with its file system, size,
+mount point and free space. USB drives that are plugged in but not mounted get a
+**Mount** button and are mounted under `/media/hasat/<label>` (FAT/exFAT/NTFS
+drives are mounted owned by root, readable by everyone). **Unmount** flushes and
+unmounts a drive so it is safe to unplug. Only removable media under `/media` or
+`/mnt` can be unmounted here, and mounts made here do not persist across reboots.
+Use **Browse** to open a drive in the file browser.
+
+**Files**: a file manager for the whole Pi (it runs as root, like the
+terminal):
+
+- navigate by clicking folders, the breadcrumb, the path box or the quick links
+- click a text file to open it in the editor; **Save** (or Ctrl+S) writes it
+  atomically and keeps its permissions and owner. If the file changed on the Pi
+  since you opened it, the save is refused so nothing is overwritten by accident.
+  Files over 2 MB or binary files can be downloaded instead
+- **Upload** (multiple files, streamed, asks before overwriting), **Download**,
+  **New folder**, **New file**, **Rename**/move and **Delete**
+
+Guard rails: paths must be absolute, nothing under `/proc`, `/sys` or `/dev` can
+be changed, and top-level system folders (`/`, `/etc`, `/usr`, `/home`, ...) cannot
+be deleted or renamed. Their contents can be, so be careful.
+
 ## Home Assistant entities
 
 If the MQTT integration is set up (e.g. the Mosquitto add-on), every satellite
@@ -122,6 +150,12 @@ new image's defaults apply. Compose and Portainer labels are kept, so stacks kee
 recognising their containers. If creating or starting the new container fails,
 the original container is renamed back and restarted. Optionally the old image is
 removed afterwards.
+
+**Installing Docker**: if Docker is not installed, the tab offers an **Install Docker**
+button with a choice between Docker's official script (`get.docker.com`, latest
+Docker CE with the compose plugin) and the Raspberry Pi OS / Debian `docker.io`
+package. The installer output is shown live and the Docker service is enabled at
+boot. If Docker is installed but not running, the button is **Start Docker**.
 
 **Automatic image updates** have their own schedule, separate from package
 updates, and are **off by default**:

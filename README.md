@@ -14,8 +14,9 @@ Assistant instance — one add-on, installed from this repository.
 - **Monitoring** — CPU temperature, usage, memory, disk, under-voltage and
   throttling as HA entities (MQTT discovery), with reboot/update buttons
 - **Built-in CLI** — full web terminal plus a one-shot command runner and journal viewer
-- **Docker** — manage containers (start/stop/restart/logs) and keep images updated on
-  their own schedule, safely recreating containers with the same configuration
+- **Docker** — one-click Docker install, manage containers (start/stop/restart/logs) and
+  keep images updated on their own schedule, safely recreating containers with the same configuration
+- **Files & USB storage** — browse and edit the Pi's files, upload/download, mount USB drives
 - **Auto updates** — scheduled `apt` upgrades with optional reboot; the satellite
   agent itself updates with the add-on
 - **Secure, LAN-only** — private CA, mutual TLS, one-time pinned enrollment and an

@@ -24,6 +24,7 @@ import copy
 import json
 import logging
 import os
+import shutil
 import struct
 import time
 from pathlib import Path
@@ -40,6 +41,7 @@ _LOGGER = logging.getLogger(__name__)
 DOCKER_HOST = os.environ.get("HASAT_DOCKER_HOST", "unix:///var/run/docker.sock")
 DOCKER_CONFIG = Path(os.environ.get("HASAT_DOCKER_CONFIG", "/root/.docker/config.json"))
 STATE_FILE = STATE / "docker.json"
+INSTALL_SCRIPT_URL = os.environ.get("HASAT_DOCKER_INSTALL_URL", "https://get.docker.com")
 OPT_OUT_LABELS = {"hasat.update": "false", "com.centurylinklabs.watchtower.enable": "false"}
 # Config keys that may have been inherited from the image rather than set by the user.
 IMAGE_KEYS = ("Cmd", "Entrypoint", "WorkingDir", "User", "Healthcheck", "ExposedPorts",
@@ -217,6 +219,92 @@ class DockerManager:
     @property
     def busy(self) -> bool:
         return self._lock.locked()
+
+    # -------------------------------------------------------------- install
+    # Commands per install method; class attribute so tests can substitute them.
+    INSTALL_COMMANDS: Dict[str, List[List[str]]] = {
+        # Docker's official convenience script: Docker CE + buildx + compose plugin.
+        "official": [
+            ["sh", "-c", f"curl -fsSL {INSTALL_SCRIPT_URL} -o /tmp/hasat-get-docker.sh"],
+            ["sh", "/tmp/hasat-get-docker.sh"],
+            ["systemctl", "enable", "--now", "docker"],
+        ],
+        # Debian/Raspberry Pi OS packaged Docker.
+        "debian": [
+            ["apt-get", "update", "-q"],
+            ["apt-get", "install", "-y", "-q", "docker.io"],
+            ["systemctl", "enable", "--now", "docker"],
+        ],
+        # Installed but the daemon is not running.
+        "start": [["systemctl", "enable", "--now", "docker"]],
+    }
+
+    INSTALL_WAIT = 30  # seconds to wait for the daemon socket after installing
+
+    @staticmethod
+    def installed() -> bool:
+        return bool(shutil.which("dockerd") or shutil.which("docker"))
+
+    async def _exec_stream(self, cmd: List[str], timeout: float = 1800) -> int:
+        self._log("$ " + " ".join(cmd))
+        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=env)
+        except OSError as err:
+            self._log(f"  cannot run {cmd[0]}: {err}")
+            return 127
+
+        async def pump() -> None:
+            assert proc.stdout is not None
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace").rstrip()
+                if line:
+                    self._log("  " + line)
+
+        try:
+            await asyncio.wait_for(asyncio.gather(pump(), proc.wait()), timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            self._log("  timed out")
+            return -1
+        return proc.returncode or 0
+
+    async def install(self, method: str) -> Dict[str, Any]:
+        if method not in self.INSTALL_COMMANDS:
+            raise ValueError("method must be one of: " + ", ".join(self.INSTALL_COMMANDS))
+        if self.busy:
+            raise RuntimeError("a Docker job is already running")
+        if method != "start" and self.api.available():
+            raise RuntimeError("Docker is already installed and running")
+        async with self._lock:
+            self.state["running"] = "install"
+            self.state["log"] = []
+            try:
+                self._log(f"Installing Docker ({method}) ...")
+                for cmd in self.INSTALL_COMMANDS[method]:
+                    rc = await self._exec_stream(cmd)
+                    if rc != 0:
+                        self.state["last_result"] = f"install failed ({' '.join(cmd[:2])} exited {rc})"
+                        self._log(self.state["last_result"])
+                        return self.status()
+                for _ in range(self.INSTALL_WAIT):  # wait for the daemon socket
+                    if self.api.available():
+                        break
+                    await asyncio.sleep(1)
+                if self.api.available():
+                    try:
+                        ver = await self.api.request("GET", "/version")
+                        self.state["last_result"] = f"Docker {ver.get('Version', '?')} installed and running"
+                    except DockerError as err:
+                        self.state["last_result"] = f"installed, but the daemon does not answer yet ({err.message})"
+                else:
+                    self.state["last_result"] = "installed, but /var/run/docker.sock did not appear"
+                self._log(self.state["last_result"])
+            finally:
+                self.state["running"] = None
+                self._save()
+        return self.status()
 
     # -------------------------------------------------------------- queries
     async def containers(self) -> List[Dict[str, Any]]:

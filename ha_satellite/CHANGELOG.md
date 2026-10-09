@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- **USB radios** tab renamed **USB and Storage**; it still shows radios and bridges, and adds:
+  - drives & USB storage with mount / unmount / browse
+  - a file browser and text editor (upload, download, new file/folder, rename, delete),
+    with conflict detection on save and protection for system folders
+- Docker tab: **Install Docker** button (official get.docker.com script or Debian `docker.io`),
+  or **Start Docker** when it is installed but not running, with live install log
+- CPU temperature also shown in °F (small, grey) on the satellite cards and Overview
+- Browsers now always load the new UI after an add-on update (cache-busted CSS/JS)
+
 ## 0.2.0
 
 - New **Docker** tab: list containers (state, image, ports, compose stack), start / stop /

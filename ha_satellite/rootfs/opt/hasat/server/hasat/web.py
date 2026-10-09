@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 from aiohttp import WSMsgType, web
 
+from . import __version__
 from .agent_client import AgentError
 from .config import INGRESS_PROXY_IPS, WEB_DIR
 
@@ -33,7 +34,13 @@ PROXY_ALLOW = [
     ("POST", r"services/[a-z0-9@_.-]+/(restart|start|stop)"),
     ("POST", r"exec"),
     ("GET", r"logs"),
+    ("GET", r"storage"),
+    ("POST", r"storage/(mount|unmount)"),
+    ("GET", r"files/(list|read)"),
+    ("PUT", r"files/write"),
+    ("POST", r"files/(mkdir|rename|delete)"),
     ("GET", r"docker"),
+    ("POST", r"docker/install"),
     ("POST", r"docker/(check|update)"),
     ("POST", r"docker/containers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/(start|stop|restart|update)"),
     ("GET", r"docker/containers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/logs"),
@@ -62,8 +69,11 @@ def build_ui_app(mgr: "Manager") -> web.Application:
         return sat
 
     # ---------------------------------------------------------------- pages
-    async def index(_request: web.Request) -> web.FileResponse:
-        return web.FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    async def index(_request: web.Request) -> web.Response:
+        # Version + mtime in asset URLs so browsers fetch new CSS/JS after an update.
+        stamp = int(max((WEB_DIR / f).stat().st_mtime for f in ("app.js", "style.css")))
+        html = (WEB_DIR / "index.html").read_text().replace("__VERSION__", f"{__version__}-{stamp}")
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
     # ------------------------------------------------------------------ api
     async def state(_request: web.Request) -> web.Response:
@@ -147,6 +157,38 @@ def build_ui_app(mgr: "Manager") -> web.Application:
             asyncio.create_task(mgr.poll_one(sat.id))
         return web.json_response(result)
 
+    async def _agent_error(resp) -> web.Response:
+        try:
+            msg = (await resp.json()).get("error")
+        except (ValueError, aiohttp.ContentTypeError):
+            msg = await resp.text()
+        return web.json_response({"error": f"{resp.status}: {msg}"}, status=502)
+
+    async def file_download(request: web.Request) -> web.StreamResponse:
+        sat = sat_or_404(request)
+        async with mgr.client.raw(sat, "GET", "/api/files/download", params={"path": request.query.get("path", "")}) as resp:
+            if resp.status >= 400:
+                return await _agent_error(resp)
+            out = web.StreamResponse(headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Disposition": resp.headers.get("Content-Disposition", "attachment"),
+            })
+            if resp.content_length is not None:
+                out.content_length = resp.content_length
+            await out.prepare(request)
+            async for chunk in resp.content.iter_chunked(256 * 1024):
+                await out.write(chunk)
+            await out.write_eof()
+            return out
+
+    async def file_upload(request: web.Request) -> web.Response:
+        sat = sat_or_404(request)
+        params = {"path": request.query.get("path", ""), "overwrite": request.query.get("overwrite", "0")}
+        async with mgr.client.raw(sat, "POST", "/api/files/upload", params=params, data=request.content) as resp:
+            if resp.status >= 400:
+                return await _agent_error(resp)
+            return web.json_response(await resp.json())
+
     async def terminal(request: web.Request) -> web.WebSocketResponse:
         sat = sat_or_404(request)
         browser = web.WebSocketResponse(heartbeat=30)
@@ -195,5 +237,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
     app.router.add_delete("/api/sat/{sat_id}", delete_sat)
     app.router.add_post("/api/sat/{sat_id}/agent-update", agent_update)
     app.router.add_get("/api/sat/{sat_id}/terminal", terminal)
+    app.router.add_get("/api/sat/{sat_id}/files/download", file_download)
+    app.router.add_post("/api/sat/{sat_id}/files/upload", file_upload)
     app.router.add_route("*", "/api/sat/{sat_id}/proxy/{path:.+}", proxy)
     return app

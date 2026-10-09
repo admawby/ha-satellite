@@ -49,7 +49,7 @@ os.environ["HASAT_DOCKER_CONFIG"] = str(TMP / "no-docker-config.json")
 
 IS_POSIX = os.name == "posix"
 if not IS_POSIX:  # the PTY terminal is Linux-only; stub its imports so the rest can run
-    for name in ("fcntl", "pty", "pwd", "termios"):
+    for name in ("fcntl", "pty", "pwd", "termios", "grp"):
         sys.modules.setdefault(name, types.ModuleType(name))
 
 import aiohttp  # noqa: E402
@@ -68,6 +68,7 @@ from hasat_agent import firewall, serial_bridge  # noqa: E402
 from hasat_agent import server as agent_server  # noqa: E402
 
 import docker_cases  # noqa: E402
+import files_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -268,9 +269,14 @@ async def main() -> None:
                 await asyncio.wait_for(read(), 15)
                 check("term-42" in seen, "interactive terminal through ingress proxy")
 
+    print("usb & storage")
+    async with aiohttp.ClientSession() as http:
+        await files_cases.run_files(check, http, ui, sat.id, TMP / "fs")
+
     print("docker")
     async with aiohttp.ClientSession() as http:
         await docker_cases.run(check, http, ui, sat.id, agent, fake)
+        await files_cases.run_docker_install(check, http, ui, sat.id, agent)
     await mgr.poll_one(sat.id)
     d = sat.metrics["docker"]
     check(d["available"] and d["total"] == 5 and d["updates_available"] == 2, "docker summary in satellite status (opted-out images still reported)")

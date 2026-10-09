@@ -15,7 +15,7 @@ from typing import Any, Dict
 
 from aiohttp import web
 
-from . import __version__, firewall, metrics, serial_bridge, terminal, usb
+from . import __version__, files, firewall, metrics, serial_bridge, storage, terminal, usb
 from .settings import (CA_FILE, CERT_FILE, INSTALL_DIR, KEY_FILE, SYSTEMD_DIR, load_config, load_settings,
                        merge_settings, save_settings)
 from .docker_mgr import DockerError, DockerManager
@@ -99,6 +99,74 @@ class Agent:
         data["docker"] = await self.docker.summary()
         return web.json_response(data)
 
+    # ------------------------------------------------------- files / storage
+    async def _blocking(self, fn, *args):
+        return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+
+    async def h_storage(self, _r: web.Request) -> web.Response:
+        return web.json_response(await self._blocking(storage.summary))
+
+    async def h_storage_mount(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        return web.json_response(await self._blocking(storage.mount, str(body.get("device", "")), bool(body.get("read_only"))))
+
+    async def h_storage_unmount(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        return web.json_response(await self._blocking(storage.unmount, str(body.get("mountpoint", ""))))
+
+    async def h_files_list(self, request: web.Request) -> web.Response:
+        data = await self._blocking(files.list_dir, request.query.get("path", "/"))
+        data["quick_links"] = files.quick_links()
+        return web.json_response(data)
+
+    async def h_files_read(self, request: web.Request) -> web.Response:
+        return web.json_response(await self._blocking(files.read_text, request.query.get("path", "")))
+
+    async def h_files_write(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        result = await self._blocking(
+            files.write_text, str(body.get("path", "")), str(body.get("content", "")),
+            body.get("expect_mtime"), bool(body.get("create")),
+        )
+        return web.json_response(result)
+
+    async def h_files_op(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        op = request.match_info["op"]
+        if op == "mkdir":
+            result = await self._blocking(files.mkdir, str(body.get("path", "")))
+        elif op == "rename":
+            result = await self._blocking(files.rename, str(body.get("from", "")), str(body.get("to", "")))
+        elif op == "delete":
+            result = await self._blocking(files.delete, str(body.get("path", "")), bool(body.get("recursive")))
+        else:
+            raise web.HTTPNotFound()
+        return web.json_response(result)
+
+    async def h_files_download(self, request: web.Request) -> web.StreamResponse:
+        path = files.download_source(request.query.get("path", ""))
+        name = os.path.basename(path).replace('"', "")
+        return web.FileResponse(path, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    async def h_files_upload(self, request: web.Request) -> web.Response:
+        target = files.upload_target(request.query.get("path", ""), request.query.get("overwrite") == "1")
+        tmp = os.path.join(os.path.dirname(target), f".hasat-upload-{os.getpid()}-{id(request)}")
+        size = 0
+        try:
+            with open(tmp, "wb") as fh:
+                while True:
+                    chunk = await request.content.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    size += len(chunk)
+            os.replace(tmp, target)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        _LOGGER.info("Uploaded %s (%d bytes)", target, size)
+        return web.json_response({"path": target, "size": size})
+
     # --------------------------------------------------------------- docker
     def _docker_job(self, coro) -> None:
         if self.docker.busy:
@@ -116,13 +184,29 @@ class Agent:
 
     async def h_docker(self, _r: web.Request) -> web.Response:
         if not self.docker.api.available():
-            return web.json_response({"available": False, "settings": self.settings["docker_update"]})
+            return web.json_response({
+                "available": False,
+                "installed": self.docker.installed(),
+                "job": self.docker.status(),
+                "settings": self.settings["docker_update"],
+            })
         return web.json_response({
             "available": True,
             "containers": await self.docker.containers(),
             "job": self.docker.status(),
             "settings": self.settings["docker_update"],
         })
+
+    async def h_docker_install(self, request: web.Request) -> web.Response:
+        body = await request.json() if request.can_read_body else {}
+        method = str((body or {}).get("method", "official"))
+        if method not in self.docker.INSTALL_COMMANDS:
+            raise ValueError("unknown install method")
+        if method != "start" and self.docker.api.available():
+            raise RuntimeError("Docker is already installed and running")
+        self._docker_job(self.docker.install(method))
+        await asyncio.sleep(0.2)
+        return web.json_response(self.docker.status())
 
     async def h_docker_check(self, _r: web.Request) -> web.Response:
         self._docker_job(self.docker.check())
@@ -338,8 +422,18 @@ class Agent:
         r.add_post("/api/exec", self.h_exec)
         r.add_get("/api/logs", self.h_logs)
         r.add_get("/api/terminal", self.h_terminal)
+        r.add_get("/api/storage", self.h_storage)
+        r.add_post("/api/storage/mount", self.h_storage_mount)
+        r.add_post("/api/storage/unmount", self.h_storage_unmount)
+        r.add_get("/api/files/list", self.h_files_list)
+        r.add_get("/api/files/read", self.h_files_read)
+        r.add_put("/api/files/write", self.h_files_write)
+        r.add_post("/api/files/{op:mkdir|rename|delete}", self.h_files_op)
+        r.add_get("/api/files/download", self.h_files_download)
+        r.add_post("/api/files/upload", self.h_files_upload)
         r.add_get("/api/docker", self.h_docker)
         r.add_post("/api/docker/check", self.h_docker_check)
+        r.add_post("/api/docker/install", self.h_docker_install)
         r.add_post("/api/docker/update", self.h_docker_update)
         r.add_post("/api/docker/containers/{name}/{action}", self.h_docker_container)
         r.add_get("/api/docker/containers/{name}/logs", self.h_docker_logs)
