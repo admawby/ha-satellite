@@ -58,7 +58,7 @@ def build(version: str) -> str:
     ctx = TMP / f"img{version}"
     ctx.mkdir(parents=True, exist_ok=True)
     (ctx / "Dockerfile").write_text(
-        "FROM busybox:1.36\n"
+        "FROM mirror.gcr.io/library/busybox:1.36\n"
         f"ENV IMAGE_VERSION={version}\n"
         f'LABEL org.opencontainers.image.version="{version}"\n'
         'CMD ["sh", "-c", "echo started $IMAGE_VERSION; sleep 3600"]\n'
@@ -78,7 +78,7 @@ def cleanup() -> None:
 
 async def main() -> None:
     cleanup()
-    sh("docker", "run", "-d", "--name", f"{PREFIX}-registry", "-p", "5055:5000", "registry:2")
+    sh("docker", "run", "-d", "--name", f"{PREFIX}-registry", "-p", "5055:5000", "mirror.gcr.io/library/registry:2")
     for _ in range(30):
         if subprocess.run(["curl", "-fs", f"http://{REG}/v2/"], capture_output=True).returncode == 0:
             break
