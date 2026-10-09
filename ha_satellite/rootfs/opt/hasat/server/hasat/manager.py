@@ -186,6 +186,7 @@ class Manager:
             "reboot": "/api/system/reboot",
             "check_updates": "/api/updates/check",
             "apply_updates": "/api/updates/apply",
+            "update_containers": "/api/docker/update",
         }.get(action)
         if not path:
             return

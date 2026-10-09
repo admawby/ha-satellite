@@ -39,7 +39,13 @@ os.environ.update(
     HASAT_INSTALL_DIR=str(TMP / "install" / "hasat-agent"),
     HASAT_SYSTEMD_DIR=str(TMP / "systemd"),
 )
-sys.path[:0] = [str(SERVER_SRC), str(AGENT_SRC)]
+sys.path[:0] = [str(SERVER_SRC), str(AGENT_SRC), str(Path(__file__).parent)]
+
+with socket.socket() as _s:  # fake Docker Engine port, needed before the agent is imported
+    _s.bind(("127.0.0.1", 0))
+    DOCKER_PORT = _s.getsockname()[1]
+os.environ["HASAT_DOCKER_HOST"] = f"tcp://127.0.0.1:{DOCKER_PORT}"
+os.environ["HASAT_DOCKER_CONFIG"] = str(TMP / "no-docker-config.json")
 
 IS_POSIX = os.name == "posix"
 if not IS_POSIX:  # the PTY terminal is Linux-only; stub its imports so the rest can run
@@ -60,6 +66,9 @@ from hasat.manager import Manager  # noqa: E402
 from hasat.web import build_ui_app  # noqa: E402
 from hasat_agent import firewall, serial_bridge  # noqa: E402
 from hasat_agent import server as agent_server  # noqa: E402
+
+import docker_cases  # noqa: E402
+from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
 
@@ -176,6 +185,9 @@ async def main() -> None:
     agent.apply_network()
     check(applied["firewall"][-1] == (True, ["127.0.0.1"], [agent_port]), "firewall limited to HA host + agent port")
     agent_runner = await serve(agent.build_app(), agent_port, agent_server._ssl_context())
+    fake = FakeDocker()
+    docker_cases.seed(fake)
+    docker_runner = await serve(fake.app(), DOCKER_PORT)
 
     await mgr.poll_one(sat.id)
     check(sat.online and sat.last_error == "", f"manager polls agent over mTLS ({sat.last_error})")
@@ -256,6 +268,17 @@ async def main() -> None:
                 await asyncio.wait_for(read(), 15)
                 check("term-42" in seen, "interactive terminal through ingress proxy")
 
+    print("docker")
+    async with aiohttp.ClientSession() as http:
+        await docker_cases.run(check, http, ui, sat.id, agent, fake)
+    await mgr.poll_one(sat.id)
+    d = sat.metrics["docker"]
+    check(d["available"] and d["total"] == 5 and d["updates_available"] == 2, "docker summary in satellite status (opted-out images still reported)")
+    check(ha_bridge.flatten(sat)["docker_updates"] == 2, "container-update count exposed to HA")
+    await docker_runner.cleanup()
+    await mgr.poll_one(sat.id)
+    check(sat.online and sat.metrics["docker"]["available"] is False, "satellite stays healthy when Docker is down")
+
     print("agent self-update")
     result = await mgr.push_agent_update(sat)
     await asyncio.wait_for(restarted.wait(), 5)
@@ -276,6 +299,7 @@ async def main() -> None:
     cfg = json.loads(published[f"homeassistant/sensor/hasat_{sat.id}/cpu_temp/config"])
     check(cfg["unique_id"] == f"hasat_{sat.id}_cpu_temp" and cfg["device_class"] == "temperature", "discovery config")
     check(f"homeassistant/button/hasat_{sat.id}/reboot/config" in published, "reboot button announced")
+    check(f"homeassistant/button/hasat_{sat.id}/update_containers/config" in published, "update-containers button announced")
     state = json.loads(published[f"hasat/{sat.id}/state"])
     check("cpu_percent" in state and published[f"hasat/{sat.id}/availability"] == "online", "state + availability")
 

@@ -47,6 +47,8 @@ SENSORS: list[Entity] = [
     Entity("load_1", "Load (1m)", state_class="measurement", icon="mdi:gauge", precision=2),
     Entity("boot_time", "Last boot", device_class="timestamp", category="diagnostic"),
     Entity("updates_available", "Package updates", icon="mdi:package-up", state_class="measurement"),
+    Entity("docker_updates", "Container updates", icon="mdi:docker", state_class="measurement"),
+    Entity("containers_running", "Containers running", icon="mdi:docker", state_class="measurement"),
     Entity("agent_version", "Agent version", icon="mdi:tag", category="diagnostic"),
     Entity("ip_address", "IP address", icon="mdi:ip-network", category="diagnostic"),
     Entity("throttled", "Throttled", component="binary_sensor", device_class="problem"),
@@ -55,6 +57,7 @@ SENSORS: list[Entity] = [
     Entity("reboot", "Reboot", component="button", device_class="restart", category="config"),
     Entity("check_updates", "Check for updates", component="button", icon="mdi:package-down", category="config"),
     Entity("apply_updates", "Install updates", component="button", icon="mdi:package-up", category="config"),
+    Entity("update_containers", "Update containers", component="button", icon="mdi:docker", category="config"),
 ]
 
 BUTTON_ACTIONS = {e.key for e in SENSORS if e.component == "button"}
@@ -66,6 +69,7 @@ def flatten(sat: Satellite) -> dict[str, Any]:
     thr = m.get("throttled") or {}
     upd = m.get("updates") or {}
     load = m.get("load") or [None]
+    dock = m.get("docker") or {}
     return {
         "cpu_temp": m.get("cpu_temp"),
         "cpu_percent": m.get("cpu_percent"),
@@ -74,6 +78,8 @@ def flatten(sat: Satellite) -> dict[str, Any]:
         "load_1": load[0],
         "boot_time": m.get("boot_time_iso"),
         "updates_available": upd.get("available"),
+        "docker_updates": dock.get("updates_available") if dock.get("available") else None,
+        "containers_running": dock.get("running") if dock.get("available") else None,
         "agent_version": m.get("agent_version"),
         "ip_address": sat.host,
         "throttled": bool(thr.get("throttled_now")),

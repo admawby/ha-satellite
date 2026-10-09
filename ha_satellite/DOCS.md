@@ -10,6 +10,8 @@ instance. From the **Satellites** panel in the sidebar you can:
   and throttling, all as Home Assistant entities
 - Use a **web terminal** (full interactive shell) and a quick command runner
 - **Update packages** on demand or automatically in a maintenance window
+- **Manage Docker containers** (start/stop/restart, logs) and keep their images
+  updated automatically on a separate schedule
 - **Reboot / shut down**, restart services and read the system journal
 - Keep the satellite **agent up to date automatically** when the add-on is updated
 
@@ -103,6 +105,52 @@ of the two-hour maintenance window, days of the week, `full-upgrade`, `autoremov
 and **reboot automatically when required**. The update count is refreshed every
 six hours and the output of the last run is kept.
 
+## Docker containers
+
+If the Pi runs Docker (for example containers you manage with Portainer), the
+**Docker** tab lists every container with its image, state, ports and compose
+stack, and lets you start, stop, restart, view logs and update it.
+
+**Checking** compares each image tag with the registry's current digest without
+downloading anything, so checks are cheap and do not use up Docker Hub pull limits.
+
+**Updating** a container pulls the new image and recreates the container with the
+same configuration: volumes and binds, published ports, environment, devices (e.g.
+USB sticks), networks and aliases, labels and restart policy. Settings that only
+came from the old image (its default env, command, labels) are dropped, so the
+new image's defaults apply. Compose and Portainer labels are kept, so stacks keep
+recognising their containers. If creating or starting the new container fails,
+the original container is renamed back and restarted. Optionally the old image is
+removed afterwards.
+
+**Automatic image updates** have their own schedule, separate from package
+updates, and are **off by default**:
+
+| Setting | Meaning |
+| --- | --- |
+| Run on a schedule | Enable the maintenance window |
+| What to do | *Check and update* (pull + recreate) or *Only check* (report only) |
+| Start time / days | Start of a two-hour window on the selected weekdays |
+| Remove the old image | Delete the previous image after a successful update |
+| Auto (per container) | Untick to exclude a container from scheduled updates |
+
+Containers are never updated automatically when they:
+
+- are unticked (excluded) in the Docker tab
+- carry the label `hasat.update=false` (Watchtower's
+  `com.centurylinklabs.watchtower.enable=false` is honoured too)
+- use an image pinned by digest (`image@sha256:…`) or by image ID
+- were started with `--rm`, or share their network namespace with other containers
+
+Home Assistant gets a **Container updates** sensor, a **Containers running**
+sensor and an **Update containers** button for each satellite.
+
+> Tip: label containers you want to update by hand only, such as Portainer
+> itself or databases, with `hasat.update=false`, or untick them.
+>
+> Private registries work when their credentials are in `/root/.docker/config.json`
+> on the Pi (`sudo docker login <registry>`). Credential helpers are not supported.
+
 ## Configuration
 
 | Option | Default | Description |
@@ -167,6 +215,8 @@ sudo nft delete table inet hasat
 | --- | --- |
 | Satellite shows *offline* with `certificate rejected` | The add-on's `/data` was reset (new CA). Re-run the install command on the Pi. |
 | Offline with `Connect call failed` | Pi is down, its IP changed (edit the address in **Settings**) or the firewall does not include the IP HA uses — add it to `extra_trusted_ips`. |
+| Docker tab says Docker is not available | Docker is not installed or `/var/run/docker.sock` is missing. |
+| Image check shows *check failed* | The registry could not be reached, or the image needs a login (`sudo docker login` on the Pi). |
 | Install command hangs at download | The Pi cannot reach `enrollment_host:8766`. Set `enrollment_host` to HA's LAN IP. |
 | Bridge says *not listening* | Check the **Logs** tab for `ser2net`; make sure no other program uses the stick. |
 | Z-Wave JS / Z2M cannot connect | Use the exact `tcp://`/`socket://` string shown, and only one integration per stick. |

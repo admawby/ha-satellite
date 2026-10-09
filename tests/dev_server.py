@@ -46,6 +46,9 @@ async def main() -> None:
     t.firewall.apply = lambda *a: None
     agent = t.agent_server.Agent()
     await t.serve(agent.build_app(), agent_port, t.agent_server._ssl_context())
+    fake = t.FakeDocker()  # demo containers for the Docker tab
+    t.docker_cases.seed(fake)
+    await t.serve(fake.app(), t.DOCKER_PORT)
     await mgr.poll_one(resp["id"])
     print("UI ready at http://127.0.0.1:8099/")
     while True:

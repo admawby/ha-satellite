@@ -1,5 +1,5 @@
 name: HA Satellite
-version: "0.1.0"
+version: "0.2.0"
 slug: ha_satellite
 description: >-
   Adopt remote Raspberry Pis as satellites of this Home Assistant instance:

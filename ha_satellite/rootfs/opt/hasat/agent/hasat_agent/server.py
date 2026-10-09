@@ -18,6 +18,7 @@ from aiohttp import web
 from . import __version__, firewall, metrics, serial_bridge, terminal, usb
 from .settings import (CA_FILE, CERT_FILE, INSTALL_DIR, KEY_FILE, SYSTEMD_DIR, load_config, load_settings,
                        merge_settings, save_settings)
+from .docker_mgr import DockerError, DockerManager
 from .updates import Updater
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class Agent:
         self.config: Dict[str, Any] = load_config()
         self.settings: Dict[str, Any] = load_settings()
         self.updater = Updater(lambda: self.settings, self.reboot)
+        self.docker = DockerManager(lambda: self.settings)
         self.errors: Dict[str, str] = {}
 
     # -------------------------------------------------------------- helpers
@@ -93,7 +95,62 @@ class Agent:
     # ------------------------------------------------------------- handlers
     async def h_status(self, _r: web.Request) -> web.Response:
         loop = asyncio.get_running_loop()
-        return web.json_response(await loop.run_in_executor(None, self.status))
+        data = await loop.run_in_executor(None, self.status)
+        data["docker"] = await self.docker.summary()
+        return web.json_response(data)
+
+    # --------------------------------------------------------------- docker
+    def _docker_job(self, coro) -> None:
+        if self.docker.busy:
+            coro.close()
+            raise RuntimeError("a Docker job is already running")
+
+        async def run() -> None:
+            try:
+                await coro
+            except Exception as err:  # noqa: BLE001 - surfaced through the job log
+                self.docker._log(f"ERROR: {err}")
+                _LOGGER.exception("Docker job failed")
+
+        asyncio.ensure_future(run())
+
+    async def h_docker(self, _r: web.Request) -> web.Response:
+        if not self.docker.api.available():
+            return web.json_response({"available": False, "settings": self.settings["docker_update"]})
+        return web.json_response({
+            "available": True,
+            "containers": await self.docker.containers(),
+            "job": self.docker.status(),
+            "settings": self.settings["docker_update"],
+        })
+
+    async def h_docker_check(self, _r: web.Request) -> web.Response:
+        self._docker_job(self.docker.check())
+        await asyncio.sleep(0.2)
+        return web.json_response(self.docker.status())
+
+    async def h_docker_update(self, request: web.Request) -> web.Response:
+        body = await request.json() if request.can_read_body else {}
+        names = (body or {}).get("names")
+        if names is not None and not isinstance(names, list):
+            raise ValueError("names must be a list")
+        self._docker_job(self.docker.update([str(n) for n in names] if names else None))
+        await asyncio.sleep(0.2)
+        return web.json_response(self.docker.status())
+
+    async def h_docker_container(self, request: web.Request) -> web.Response:
+        name, action = request.match_info["name"], request.match_info["action"]
+        if action == "update":
+            self.docker._check_name(name)
+            self._docker_job(self.docker.update([name]))
+            await asyncio.sleep(0.2)
+            return web.json_response(self.docker.status())
+        await self.docker.action(name, action)
+        return web.json_response({"ok": True})
+
+    async def h_docker_logs(self, request: web.Request) -> web.Response:
+        lines = max(10, min(int(request.query.get("lines", "300")), 5000))
+        return web.json_response({"output": await self.docker.logs(request.match_info["name"], lines)})
 
     async def h_usb(self, _r: web.Request) -> web.Response:
         return web.json_response({"serial": usb.serial_devices(), "usb": usb.usb_tree()})
@@ -258,6 +315,8 @@ class Agent:
                 return web.json_response({"error": str(err)}, status=400)
             except RuntimeError as err:
                 return web.json_response({"error": str(err)}, status=409)
+            except DockerError as err:
+                return web.json_response({"error": f"Docker: {err.message}"}, status=502)
             except OSError as err:  # e.g. a system tool (journalctl, apt, nft) is missing
                 _LOGGER.warning("%s %s failed: %s", request.method, request.path, err)
                 return web.json_response({"error": str(err)}, status=500)
@@ -279,6 +338,11 @@ class Agent:
         r.add_post("/api/exec", self.h_exec)
         r.add_get("/api/logs", self.h_logs)
         r.add_get("/api/terminal", self.h_terminal)
+        r.add_get("/api/docker", self.h_docker)
+        r.add_post("/api/docker/check", self.h_docker_check)
+        r.add_post("/api/docker/update", self.h_docker_update)
+        r.add_post("/api/docker/containers/{name}/{action}", self.h_docker_container)
+        r.add_get("/api/docker/containers/{name}/logs", self.h_docker_logs)
         r.add_post("/api/agent/update", self.h_agent_update)
         r.add_post("/api/agent/uninstall", self.h_uninstall)
         return app
@@ -287,6 +351,7 @@ class Agent:
         metrics.prime()
         await asyncio.get_running_loop().run_in_executor(None, self.apply_network)
         asyncio.ensure_future(self.updater.scheduler())
+        asyncio.ensure_future(self.docker.scheduler())
         runner = web.AppRunner(self.build_app(), access_log=None)
         await runner.setup()
         port = int(self.config["agent_port"])

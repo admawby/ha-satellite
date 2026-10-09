@@ -72,6 +72,8 @@ function satCard(s) {
   if (thr.under_voltage_now) chips.push(`<span class="chip bad">under-voltage</span>`);
   if (thr.throttled_now) chips.push(`<span class="chip bad">throttled</span>`);
   const bridges = (m.serial || []).filter((b) => b.enabled);
+  const dk = m.docker || {};
+  if (dk.available) chips.push(`<span class="chip ${dk.updates_available ? "warn" : ""}">Docker ${dk.running}/${dk.total}${dk.updates_available ? ` · ${dk.updates_available} image update${dk.updates_available > 1 ? "s" : ""}` : ""}</span>`);
   if (bridges.length) chips.push(`<span class="chip ok">${bridges.length} radio bridge${bridges.length > 1 ? "s" : ""}</span>`);
   if (m.agent_version && state.controller && m.agent_version !== state.controller.agent_version) chips.push(`<span class="chip">agent ${esc(m.agent_version)}</span>`);
   return `
@@ -185,7 +187,7 @@ async function startAdopt() {
 }
 
 // ------------------------------------------------------------------ detail
-const TABS = [["overview", "Overview"], ["radios", "USB radios"], ["terminal", "Terminal"], ["updates", "Updates"], ["logs", "Logs"], ["settings", "Settings"]];
+const TABS = [["overview", "Overview"], ["radios", "USB radios"], ["terminal", "Terminal"], ["updates", "Updates"], ["docker", "Docker"], ["logs", "Logs"], ["settings", "Settings"]];
 
 function renderDetail() {
   const s = currentSat();
@@ -206,7 +208,7 @@ function renderDetail() {
     el.innerHTML = `<div class="card">Satellite is offline${s.last_error ? `: <span class="bad">${esc(s.last_error)}</span>` : ""}.</div>`;
     return;
   }
-  ({ overview: tabOverview, radios: tabRadios, terminal: tabTerminal, updates: tabUpdates, logs: tabLogs, settings: tabSettings })[state.tab](el, s);
+  ({ overview: tabOverview, radios: tabRadios, terminal: tabTerminal, updates: tabUpdates, docker: tabDocker, logs: tabLogs, settings: tabSettings })[state.tab](el, s);
 }
 
 function bar(v, warn, bad) { return `<div class="bar"><i class="${level(v, warn, bad)}" style="width:${Math.min(100, v || 0)}%"></i></div>`; }
@@ -250,6 +252,7 @@ function tabOverview(el, s) {
             <dt>Addresses</dt><dd class="mono">${addrs || "–"}</dd>
             <dt>Agent</dt><dd>${esc(m.agent_version || "–")}${state.controller && m.agent_version && m.agent_version !== state.controller.agent_version ? ` <span class="warn">(add-on ships ${esc(state.controller.agent_version)})</span>` : ""}</dd>
             <dt>Package updates</dt><dd>${upd.available ?? "–"} available · checked ${fmtAgo(upd.last_check)}${upd.reboot_required ? ' · <span class="warn">reboot required</span>' : ""}</dd>
+            <dt>Docker</dt><dd>${(m.docker || {}).available ? `${m.docker.running}/${m.docker.total} containers running · ${m.docker.updates_available} image update(s) · checked ${fmtAgo(m.docker.last_check)}` : "not installed"}</dd>
             <dt>Radio bridges</dt><dd>${(m.serial || []).map((b) => `${esc(b.name || b.device)} → :${b.port} ${b.listening ? '<span class="ok">●</span>' : '<span class="bad">●</span>'}`).join("<br>") || "none"}</dd>
           </dl>
           ${Object.keys(m.errors || {}).length ? `<p class="bad">${Object.entries(m.errors).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join("<br>")}</p>` : ""}
@@ -441,6 +444,143 @@ async function tabUpdates(el) {
   };
   await load();
   every(3000, load);
+}
+
+// ------------------------------------------------------------------ docker
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+async function tabDocker(el) {
+  let data;
+  try { data = await satApi("docker"); } catch (e) { el.innerHTML = `<div class="card bad">${esc(e.message)}</div>`; return; }
+  if (!data.available) {
+    el.innerHTML = `<div class="card"><h4>Docker</h4><p class="muted">Docker is not installed or its socket (<code>/var/run/docker.sock</code>) is not available on this satellite.</p></div>`;
+    return;
+  }
+  const cfg = data.settings;
+  const exclude = new Set(cfg.exclude || []);
+  el.innerHTML = `
+    <div class="card section">
+      <div class="row" style="margin-bottom:10px">
+        <h4 style="margin:0">Containers</h4><span class="muted" id="d-summary"></span><span class="spacer"></span>
+        <button class="btn" id="d-check">Check for updates</button>
+        <button class="btn primary" id="d-update">Update all</button>
+      </div>
+      <div style="overflow-x:auto"><table id="d-table"></table></div>
+      <p class="muted" style="margin-bottom:0">Updating pulls the new image and recreates the container with the same settings (volumes, ports, env, networks, labels, restart policy). If anything fails the original container is put back. Untick “Auto” to keep a container out of scheduled updates.</p>
+    </div>
+    <div class="two">
+      <div class="card">
+        <h4>Automatic image updates</h4>
+        <label class="check"><input type="checkbox" id="ds-en" ${cfg.enabled ? "checked" : ""}> Run on a schedule</label>
+        <label class="field"><span>What to do</span>
+          <select id="ds-mode"><option value="update" ${cfg.mode === "update" ? "selected" : ""}>Check and update containers</option>
+          <option value="check" ${cfg.mode === "check" ? "selected" : ""}>Only check (report in Home Assistant)</option></select></label>
+        <div class="row" style="margin-bottom:10px"><span>Maintenance window starts at</span><input type="time" id="ds-time" value="${esc(cfg.time)}"></div>
+        <div class="row" style="margin-bottom:10px">${DAYS.map((d, i) => `<label class="check" style="margin:0"><input type="checkbox" data-dday="${i}" ${cfg.days.includes(i) ? "checked" : ""}>${d}</label>`).join("")}</div>
+        <label class="check"><input type="checkbox" id="ds-prune" ${cfg.prune ? "checked" : ""}> Remove the old image after a successful update</label>
+        <p class="muted">Containers labelled <code>hasat.update=false</code> (or Watchtower's <code>com.centurylinklabs.watchtower.enable=false</code>) are always skipped.</p>
+        <div class="row"><span class="muted" id="ds-excl"></span><span class="spacer"></span><button class="btn primary" id="ds-save">Save schedule</button></div>
+      </div>
+      <div class="card">
+        <h4>Last run</h4>
+        <div id="d-job" class="muted"></div>
+        <pre class="out" id="d-log" style="margin-top:10px;max-height:300px">–</pre>
+      </div>
+    </div>`;
+
+  const stateBadge = (c) => {
+    const cls = c.state === "running" ? "ok" : c.state === "exited" || c.state === "dead" ? "bad" : "warn";
+    return `<span class="chip ${cls}">${esc(c.state)}</span>`;
+  };
+  const updBadge = (c) => {
+    if (c.check_error) return `<span class="chip bad" title="${esc(c.check_error)}">check failed</span>`;
+    if (c.update_available) return `<span class="chip warn">update available</span>`;
+    if (c.skip_reason && c.skip_reason !== "excluded in settings") return `<span class="chip" title="${esc(c.skip_reason)}">pinned / opted out</span>`;
+    return c.checked ? `<span class="chip ok">up to date</span>` : `<span class="muted">not checked</span>`;
+  };
+  const exclText = () => (exclude.size ? `Excluded: ${[...exclude].join(", ")}` : "");
+
+  const draw = (d) => {
+    const job = d.job || {};
+    const busy = !!job.running;
+    const updates = d.containers.filter((c) => c.update_available).length;
+    $("#d-summary").textContent = `${d.containers.filter((c) => c.state === "running").length}/${d.containers.length} running · ${updates} update${updates === 1 ? "" : "s"} · checked ${fmtAgo(job.last_check)}`;
+    $("#d-check").disabled = $("#d-update").disabled = busy;
+    const eligible = d.containers.filter((c) => c.update_available && c.auto_update && !exclude.has(c.name)).length;
+    $("#d-update").textContent = eligible ? `Update all (${eligible})` : "Update all";
+    $("#d-table").innerHTML = `<thead><tr><th title="Include in scheduled updates">Auto</th><th>Container</th><th>Image</th><th>State</th><th>Ports</th><th>Image update</th><th></th></tr></thead><tbody>
+      ${d.containers.map((c) => {
+        const labelOptOut = c.skip_reason && c.skip_reason !== "excluded in settings";
+        return `<tr>
+        <td><input type="checkbox" data-auto="${esc(c.name)}" ${labelOptOut ? "disabled" : ""} ${!labelOptOut && !exclude.has(c.name) ? "checked" : ""} title="${esc(c.skip_reason || "")}"></td>
+        <td><b>${esc(c.name)}</b>${c.project ? `<div class="muted">stack: ${esc(c.project)}</div>` : ""}<div class="muted" style="font-size:12px">${esc(c.status)}</div></td>
+        <td class="mono" style="max-width:240px;overflow-wrap:anywhere">${esc(c.image)}<div class="muted">${esc(c.image_id)}</div></td>
+        <td>${stateBadge(c)}</td>
+        <td class="mono" style="font-size:12px">${c.ports.map(esc).join("<br>") || "–"}</td>
+        <td>${updBadge(c)}</td>
+        <td style="white-space:nowrap;text-align:right">
+          ${c.state === "running" ? `<button class="btn small" data-act="stop" data-n="${esc(c.name)}">Stop</button>` : `<button class="btn small" data-act="start" data-n="${esc(c.name)}">Start</button>`}
+          <button class="btn small" data-act="restart" data-n="${esc(c.name)}">Restart</button>
+          <button class="btn small" data-act="update" data-n="${esc(c.name)}" ${busy ? "disabled" : ""}>Update</button>
+          <button class="btn small" data-logs="${esc(c.name)}">Logs</button>
+        </td></tr>`;
+      }).join("") || '<tr><td colspan="7" class="muted">No containers.</td></tr>'}</tbody>`;
+    $("#d-job").innerHTML = `${busy ? `<span class="warn">Running: ${esc(job.running)}…</span><br>` : ""}
+      Last check: ${fmtAgo(job.last_check)} · Last update run: ${fmtAgo(job.last_update)}${job.last_result ? `<br>Result: ${esc(job.last_result)}` : ""}`;
+    const log = $("#d-log"); const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+    log.textContent = (job.log || []).join("\n") || "–"; if (stick) log.scrollTop = log.scrollHeight;
+    $("#ds-excl").textContent = exclText();
+
+    el.querySelectorAll("[data-auto]").forEach((cb) => (cb.onchange = () => {
+      cb.checked ? exclude.delete(cb.dataset.auto) : exclude.add(cb.dataset.auto);
+      $("#ds-excl").textContent = `${exclText()} — save schedule to apply`;
+    }));
+    el.querySelectorAll("[data-act]").forEach((b) => (b.onclick = async () => {
+      const { act, n } = b.dataset;
+      if (act === "update" && !confirm(`Pull the latest image for ${n} and recreate the container?`)) return;
+      if (act === "stop" && !confirm(`Stop ${n}?`)) return;
+      b.disabled = true;
+      try { await satApi(`docker/containers/${encodeURIComponent(n)}/${act}`, { method: "POST" }); toast(act === "update" ? `Updating ${n}…` : `${n}: ${act} done`); }
+      catch (e) { toast(e.message, 5000); }
+      load();
+    }));
+    el.querySelectorAll("[data-logs]").forEach((b) => (b.onclick = () => containerLogs(b.dataset.logs)));
+  };
+
+  const load = async () => {
+    try { const d = await satApi("docker"); if (d.available && state.tab === "docker") draw(d); } catch (e) { toast(e.message); }
+  };
+  $("#d-check").onclick = async () => { try { await satApi("docker/check", { method: "POST" }); toast("Checking registries…"); } catch (e) { toast(e.message); } load(); };
+  $("#d-update").onclick = async () => {
+    if (!confirm("Pull new images and recreate every container that has an update (except excluded ones)?")) return;
+    try { await satApi("docker/update", { method: "POST" }); toast("Update started"); } catch (e) { toast(e.message); } load();
+  };
+  $("#ds-save").onclick = async () => {
+    const body = { docker_update: {
+      enabled: $("#ds-en").checked, mode: $("#ds-mode").value, time: $("#ds-time").value, prune: $("#ds-prune").checked,
+      days: [...el.querySelectorAll("[data-dday]")].filter((c) => c.checked).map((c) => +c.dataset.dday),
+      exclude: [...exclude] } };
+    try { await satApi("settings", { method: "PUT", body }); toast("Docker schedule saved"); load(); } catch (e) { toast(e.message); }
+  };
+  draw(data);
+  every(4000, load);
+}
+
+async function containerLogs(name) {
+  modalBody.innerHTML = `<h3>Logs: ${esc(name)}</h3>
+    <div class="row" style="margin-bottom:8px"><select id="cl-lines"><option>100</option><option selected>300</option><option>1000</option></select>
+    <button type="button" class="btn small" id="cl-refresh">Refresh</button></div>
+    <pre class="out" id="cl-out">Loading…</pre>
+    <div class="modal-actions"><button type="button" class="btn" id="cl-close">Close</button></div>`;
+  modal.style.width = "min(1000px, calc(100vw - 32px))";
+  const load = async () => {
+    try { const r = await satApi(`docker/containers/${encodeURIComponent(name)}/logs?lines=${$("#cl-lines").value}`); const o = $("#cl-out"); o.textContent = r.output || "(no output)"; o.scrollTop = o.scrollHeight; }
+    catch (e) { $("#cl-out").textContent = e.message; }
+  };
+  $("#cl-refresh").onclick = load; $("#cl-lines").onchange = load;
+  $("#cl-close").onclick = () => { modal.close(); modal.style.width = ""; };
+  modal.showModal();
+  load();
 }
 
 // ------------------------------------------------------------------ logs

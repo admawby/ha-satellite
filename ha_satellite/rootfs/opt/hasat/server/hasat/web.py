@@ -33,6 +33,10 @@ PROXY_ALLOW = [
     ("POST", r"services/[a-z0-9@_.-]+/(restart|start|stop)"),
     ("POST", r"exec"),
     ("GET", r"logs"),
+    ("GET", r"docker"),
+    ("POST", r"docker/(check|update)"),
+    ("POST", r"docker/containers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/(start|stop|restart|update)"),
+    ("GET", r"docker/containers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/logs"),
 ]
 
 
@@ -135,7 +139,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
             raise web.HTTPForbidden(text="endpoint not allowed")
         raw = await request.text()
         payload = json.loads(raw) if raw.strip() else None
-        timeout = 900 if path in ("updates/apply", "exec") else 60
+        timeout = 900 if path in ("updates/apply", "exec") else 180 if path.startswith("docker") else 60
         result = await mgr.client.request(
             sat, request.method, f"/api/{path}", json=payload, params=dict(request.query), timeout=timeout
         )

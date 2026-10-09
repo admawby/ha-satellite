@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import json
 import logging
 import os
@@ -11,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from .schedule import due_window
 from .settings import STATE
 
 _LOGGER = logging.getLogger(__name__)
@@ -142,17 +142,8 @@ class Updater:
 
     async def _tick(self) -> None:
         cfg = self._get_settings()["auto_update"]
-        now = dt.datetime.now()
-        today = now.strftime("%Y-%m-%d")
-        hh, mm = (int(x) for x in cfg.get("time", "04:00").split(":"))
-        minutes_into_window = (now.hour * 60 + now.minute) - (hh * 60 + mm)
-        if (
-            cfg.get("enabled")
-            and now.weekday() in cfg.get("days", [])
-            and 0 <= minutes_into_window < 120  # window lasts two hours
-            and self.state.get("last_window") != today
-            and not self._lock.locked()
-        ):
+        today = due_window(cfg, self.state.get("last_window"))
+        if today and not self._lock.locked():
             self.state["last_window"] = today
             _LOGGER.info("Starting scheduled package upgrade")
             await self.apply()

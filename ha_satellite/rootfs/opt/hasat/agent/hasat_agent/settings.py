@@ -28,6 +28,15 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "autoremove": True,
         "auto_reboot": False,
     },
+    # Off by default: recreating containers on a schedule must be an explicit choice.
+    "docker_update": {
+        "enabled": False,
+        "mode": "update",  # "check" = only report new images, "update" = pull + recreate
+        "time": "05:00",
+        "days": [0, 1, 2, 3, 4, 5, 6],
+        "prune": True,
+        "exclude": [],
+    },
     "firewall_enabled": True,
     "terminal_user": "root",
     "serial": [],
@@ -35,6 +44,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -73,17 +83,19 @@ def merge_settings(current: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, 
     new = copy.deepcopy(current)
     au = patch.get("auto_update")
     if isinstance(au, dict):
-        target = new["auto_update"]
-        for key in ("enabled", "full_upgrade", "autoremove", "auto_reboot"):
-            if key in au:
-                target[key] = bool(au[key])
-        if "time" in au:
-            if not _TIME_RE.match(str(au["time"])):
-                raise ValueError("time must be HH:MM")
-            target["time"] = str(au["time"])
-        if "days" in au:
-            days = sorted({int(d) for d in au["days"] if 0 <= int(d) <= 6})
-            target["days"] = days
+        _merge_schedule(new["auto_update"], au, ("enabled", "full_upgrade", "autoremove", "auto_reboot"))
+    du = patch.get("docker_update")
+    if isinstance(du, dict):
+        _merge_schedule(new["docker_update"], du, ("enabled", "prune"))
+        if "mode" in du:
+            if du["mode"] not in ("check", "update"):
+                raise ValueError("mode must be 'check' or 'update'")
+            new["docker_update"]["mode"] = du["mode"]
+        if "exclude" in du:
+            names = [str(n) for n in du["exclude"]]
+            if not all(CONTAINER_RE.match(n) for n in names):
+                raise ValueError("invalid container name in exclude list")
+            new["docker_update"]["exclude"] = sorted(set(names))
     if "firewall_enabled" in patch:
         new["firewall_enabled"] = bool(patch["firewall_enabled"])
     if "terminal_user" in patch:
@@ -92,3 +104,16 @@ def merge_settings(current: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, 
             raise ValueError("invalid terminal user")
         new["terminal_user"] = user
     return new
+
+
+def _merge_schedule(target: Dict[str, Any], patch: Dict[str, Any], flags: tuple) -> None:
+    """Validate the common schedule fields (boolean flags, HH:MM time, weekdays)."""
+    for key in flags:
+        if key in patch:
+            target[key] = bool(patch[key])
+    if "time" in patch:
+        if not _TIME_RE.match(str(patch["time"])):
+            raise ValueError("time must be HH:MM")
+        target["time"] = str(patch["time"])
+    if "days" in patch:
+        target["days"] = sorted({int(d) for d in patch["days"] if 0 <= int(d) <= 6})
