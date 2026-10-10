@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import ssl
@@ -104,8 +105,10 @@ class AgentClient:
         except (aiohttp.ClientError, TimeoutError) as err:
             raise AgentError(str(err) or err.__class__.__name__) from err
 
-    async def ws_connect(self, sat: Satellite, path: str) -> aiohttp.ClientWebSocketResponse:
+    async def ws_connect(self, sat: Satellite, path: str, timeout: float = 15) -> aiohttp.ClientWebSocketResponse:
+        """Open a WebSocket to the agent; fail fast instead of hanging on an unreachable host."""
         assert self._session is not None
-        return await self._session.ws_connect(
-            self.base_url(sat) + path, server_hostname=sat.id, heartbeat=30
+        return await asyncio.wait_for(
+            self._session.ws_connect(self.base_url(sat) + path, server_hostname=sat.id, heartbeat=30),
+            timeout,
         )

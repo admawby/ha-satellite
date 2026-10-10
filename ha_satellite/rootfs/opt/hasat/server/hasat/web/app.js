@@ -39,7 +39,7 @@ function clearTimers() { state.timers.forEach(clearInterval); state.timers = [];
 function every(ms, fn) { state.timers.push(setInterval(fn, ms)); }
 function closeTerminal() {
   if (termSocket) { termSocket.onclose = null; termSocket.close(); termSocket = null; }
-  if (termResize) { window.removeEventListener("resize", termResize); termResize = null; }
+  if (termResize) { termResize.disconnect(); termResize = null; }
   if (term) { term.dispose(); term = null; }
 }
 
@@ -582,6 +582,7 @@ function tabTerminal(el, s) {
 function openTerminal() {
   const wrap = $("#terminal-wrap"); if (!wrap) return;
   wrap.innerHTML = "";
+  { const st = $("#t-status"); if (st) st.textContent = "connecting…"; }
   if (!window.Terminal) { wrap.innerHTML = '<p class="bad">xterm.js failed to load.</p>'; return; }
   term = new Terminal({ cursorBlink: true, fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 13, theme: { background: "#0d1014" }, scrollback: 5000 });
   termFit = new FitAddon.FitAddon(); term.loadAddon(termFit); term.open(wrap); termFit.fit();
@@ -591,12 +592,21 @@ function openTerminal() {
   const send = (o) => termSocket && termSocket.readyState === 1 && termSocket.send(JSON.stringify(o));
   const status = (t) => { const el = $("#t-status"); if (el) el.textContent = t; };
   termSocket.onopen = () => { status("connected"); send({ t: "r", c: term.cols, r: term.rows }); term.focus(); };
-  termSocket.onmessage = (ev) => term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data));
-  termSocket.onclose = () => { status("disconnected"); term && term.write("\r\n\x1b[90m[session closed]\x1b[0m\r\n"); };
+  termSocket.onmessage = (ev) => { if (ev.target === termSocket && term) term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data)); };
+  const sock = termSocket;
+  sock.onclose = (ev) => {
+    if (sock !== termSocket) return;  // an older session closing after Reconnect
+    const why = ev.code === 1000 || ev.code === 1005 ? "" : ` (code ${ev.code}${ev.reason ? `: ${ev.reason}` : ""})`;
+    status("disconnected");
+    term && term.write(`\r\n\x1b[90m[session closed${why} - press Reconnect to start a new one]\x1b[0m\r\n`);
+  };
+  sock.onerror = () => { if (sock === termSocket) status("connection failed"); };
   term.onData((d) => send({ t: "i", d }));
   term.onResize(({ cols, rows }) => send({ t: "r", c: cols, r: rows }));
-  termResize = () => termFit && termFit.fit();
-  window.addEventListener("resize", termResize);
+  // Refit whenever the box changes size, including when a hidden page becomes visible.
+  const ro = new ResizeObserver(() => { if (termFit && wrap.clientWidth > 0) { try { termFit.fit(); } catch { /* not ready */ } } });
+  ro.observe(wrap);
+  termResize = ro;
 }
 
 // ------------------------------------------------------------------ updates

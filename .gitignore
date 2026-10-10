@@ -5,3 +5,4 @@ venv/
 .vscode/
 .idea/
 tests/.tmp/
+ha_satellite/rootfs/opt/hasat/server/hasat/web/vendor/

@@ -253,6 +253,16 @@ async def main() -> None:
         async with http.put(f"{ui}/api/sat/{sat.id}/proxy/settings", json={"auto_update": {"time": "03:30", "days": [5, 6], "auto_reboot": True}}) as r:
             s = await r.json()
             check(s["auto_update"]["time"] == "03:30" and s["auto_update"]["days"] == [5, 6], "update schedule saved")
+        ghost = type(sat)(id="sat-0ff11e00", name="Ghost", host="127.0.0.1", port=free_port())
+        mgr.store.satellites[ghost.id] = ghost
+        async with http.ws_connect(f"{ui}/api/sat/{ghost.id}/terminal") as ws:
+            text = ""
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.BINARY:
+                    text += msg.data.decode(errors="ignore")
+            check("Cannot reach Ghost" in text and ws.close_code == 4502,
+                  "terminal: unreachable satellite reported clearly, session closed")
+        del mgr.store.satellites[ghost.id]
         async with http.post(f"{ui}/api/sat/{sat.id}/proxy/agent/uninstall") as r:
             check(r.status == 403, "proxy blocks non-allowlisted agent endpoints")
         if IS_POSIX:

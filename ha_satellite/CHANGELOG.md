@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.1
+
+- Terminal: fail fast with a clear message when the satellite cannot be reached
+  (previously the session could sit on a blank screen for up to 5 minutes, e.g. after
+  a reboot, an IP change or when the satellite's firewall drops traffic)
+- Terminal: shows "Connecting to …" and the reason a session closed; output from an old
+  session can no longer leak into a new one after **Reconnect**
+- Terminal: resizes itself when its box changes size, so it no longer gets stuck at a
+  tiny size when opened while the page was hidden
+- Tests: reconnect scenarios (repeated reconnects, after `exit`, two sessions, idle) against
+  the UI proxy, a real installed agent and a real container agent
+
 ## 0.5.0
 
 - **Remove without a trace**: removing a satellite can now erase everything HA Satellite

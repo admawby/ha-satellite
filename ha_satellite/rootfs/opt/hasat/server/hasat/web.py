@@ -195,11 +195,15 @@ def build_ui_app(mgr: "Manager") -> web.Application:
         sat = sat_or_404(request)
         browser = web.WebSocketResponse(heartbeat=30)
         await browser.prepare(request)
+        await browser.send_bytes(f"\x1b[90mConnecting to {sat.name} ({sat.host})...\x1b[0m\r\n".encode())
         try:
             agent = await mgr.client.ws_connect(sat, "/api/terminal")
-        except (aiohttp.ClientError, OSError) as err:
-            await browser.send_bytes(f"\r\n\x1b[31mCannot reach {sat.name}: {err}\x1b[0m\r\n".encode())
-            await browser.close()
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as err:
+            reason = ("no answer within 15 s (device off, IP changed, or firewall?)"
+                      if isinstance(err, asyncio.TimeoutError) else str(err))
+            _LOGGER.warning("Terminal: cannot reach %s: %s", sat.name, reason)
+            await browser.send_bytes(f"\x1b[31mCannot reach {sat.name}: {reason}\x1b[0m\r\n".encode())
+            await browser.close(code=4502, message=b"satellite unreachable")
             return browser
         _LOGGER.info("Terminal session opened on %s", sat.name)
 
