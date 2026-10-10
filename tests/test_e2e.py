@@ -70,6 +70,7 @@ from hasat_agent import server as agent_server  # noqa: E402
 import docker_cases  # noqa: E402
 import files_cases  # noqa: E402
 import mode_cases  # noqa: E402
+import removal_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -290,6 +291,10 @@ async def main() -> None:
     await docker_runner.cleanup()
     await mgr.poll_one(sat.id)
     check(sat.online and sat.metrics["docker"]["available"] is False, "satellite stays healthy when Docker is down")
+
+    print("removal")
+    async with aiohttp.ClientSession() as http:
+        await removal_cases.run(check, http, ui, mgr, sat, agent, TMP / "state")
 
     print("agent self-update")
     result = await mgr.push_agent_update(sat)

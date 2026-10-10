@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+- **Remove without a trace**: removing a satellite can now erase everything HA Satellite
+  put on the device. That covers the agent, service, files, certificates, firewall table,
+  ser2net config and mounts, plus apt packages the installer added (only if nothing else
+  needs them), and on Synology the container, image and data folder
+  - the dialog shows the device's exact removal plan before you confirm
+  - optional removal of Docker if it was installed with the *Install Docker* button
+  - the satellite stays in Home Assistant if the device cannot confirm the cleanup
+  - Home Assistant entities are removed for MQTT and REST setups
+- The installer and *Install Docker* record what they add (`install-record.json`)
+- "Adopting" a device is now called **launching** a satellite throughout the UI and docs
+- CI: a real install + removal on Ubuntu verifies no packages, files, units or firewall rules remain
+
 ## 0.4.0
 
 - **Synology NAS support (container mode)**: the installer detects DSM and runs the agent
@@ -38,7 +52,7 @@
 ## 0.1.0
 
 - Initial release
-- One-click adoption over SSH and pinned one-line installer
+- One-click launching over SSH and pinned one-line installer
 - Private CA and mutual-TLS agent API
 - USB radio discovery and ser2net bridges with nftables protection
 - Health metrics (CPU temperature, usage, memory, disk, throttling) via MQTT discovery or REST

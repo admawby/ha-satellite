@@ -33,6 +33,7 @@ from urllib.parse import quote
 
 import aiohttp
 
+from . import cleanup
 from .mode import own_container
 from .schedule import due_window
 from .settings import CONTAINER_RE, STATE
@@ -278,9 +279,12 @@ class DockerManager:
             raise RuntimeError("a Docker job is already running")
         if method != "start" and self.api.available():
             raise RuntimeError("Docker is already installed and running")
+        loop = asyncio.get_running_loop()
         async with self._lock:
             self.state["running"] = "install"
             self.state["log"] = []
+            # Remember which packages this adds, so removing the satellite can undo it.
+            before = await loop.run_in_executor(None, cleanup.installed_packages) if method != "start" else []
             try:
                 self._log(f"Installing Docker ({method}) ...")
                 for cmd in self.INSTALL_COMMANDS[method]:
@@ -303,6 +307,11 @@ class DockerManager:
                     self.state["last_result"] = "installed, but /var/run/docker.sock did not appear"
                 self._log(self.state["last_result"])
             finally:
+                if method != "start" and before:
+                    after = await loop.run_in_executor(None, cleanup.installed_packages)
+                    added = sorted(set(after) - set(before))
+                    if added:
+                        cleanup.note_docker_installed(method, added)
                 self.state["running"] = None
                 self._save()
         return self.status()

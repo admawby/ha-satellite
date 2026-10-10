@@ -173,7 +173,13 @@ async def main() -> None:
             break
         await asyncio.sleep(1)
     check(not sh("docker", "ps", "-aq", "--filter", f"name=^{NAME}$", check=False), "uninstall removed the agent container")
-    check(not (base / "etc").exists(), "uninstall removed certificates and config")
+    for _ in range(30):
+        if not base.exists():
+            break
+        await asyncio.sleep(1)
+    check(not base.exists(), "uninstall removed the whole data folder")
+    check(not sh("docker", "images", "-q", "hasat-agent:local", check=False), "uninstall removed the agent image")
+    check(bool(sh("docker", "images", "-q", BASE_IMAGE, check=False)), "base image it did not download is kept")
     await client.close()
 
 

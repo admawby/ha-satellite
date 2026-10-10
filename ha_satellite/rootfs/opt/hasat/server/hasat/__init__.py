@@ -1,3 +1,3 @@
-"""HA Satellite manager: adopts and controls Raspberry Pi satellites."""
+"""HA Satellite manager: launches and controls satellites."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

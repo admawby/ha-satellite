@@ -95,8 +95,8 @@ function renderList() {
     view.innerHTML = `
       <div class="card empty">
         <h2>No satellites yet</h2>
-        <p class="muted">Adopt a Raspberry Pi on your network to use its USB radios, monitor it and manage it from here.</p>
-        <button class="btn primary" id="empty-add">Add satellite</button>
+        <p class="muted">Launch a satellite on a Raspberry Pi (or Synology NAS) on your network to monitor and manage it from here.</p>
+        <button class="btn primary" id="empty-add">Launch satellite</button>
       </div>`;
     $("#empty-add").onclick = openAdd;
   } else {
@@ -111,14 +111,14 @@ function renderListQuiet() {
   view.querySelectorAll(".sat-card").forEach((el) => (el.onclick = () => go(el.dataset.id)));
 }
 
-// ------------------------------------------------------------------ add / adopt
+// ------------------------------------------------------------------ launch a satellite
 function openAdd() {
   const c = state.controller || {};
   modalBody.innerHTML = `
-    <h3>Add a satellite</h3>
-    <div class="tabs"><button type="button" class="tab active" data-t="ssh">Adopt over SSH</button><button type="button" class="tab" data-t="manual">Install command</button></div>
+    <h3>Launch a satellite</h3>
+    <div class="tabs"><button type="button" class="tab active" data-t="ssh">Launch over SSH</button><button type="button" class="tab" data-t="manual">Install command</button></div>
     <div id="add-ssh">
-      <p class="muted">The add-on logs in once, installs the agent and enrolls the Pi. Credentials are used for this session only and are never stored.</p>
+      <p class="muted">The add-on logs in once, installs the agent and launches the satellite. Credentials are used for this session only and are never stored.</p>
       <div class="two">
         <label class="field"><span>Pi address</span><input type="text" id="a-host" placeholder="192.168.1.50" required></label>
         <label class="field"><span>SSH port</span><input type="number" id="a-port" value="22"></label>
@@ -139,17 +139,17 @@ function openAdd() {
     </div>
     <div class="modal-actions">
       <button type="button" class="btn" id="add-close">Close</button>
-      <button type="button" class="btn primary" id="add-go">Adopt</button>
+      <button type="button" class="btn primary" id="add-go">Launch</button>
     </div>`;
   let mode = "ssh";
   modalBody.querySelectorAll(".tab").forEach((t) => (t.onclick = () => {
     mode = t.dataset.t;
     modalBody.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
     $("#add-ssh").hidden = mode !== "ssh"; $("#add-manual").hidden = mode !== "manual";
-    $("#add-go").textContent = mode === "ssh" ? "Adopt" : "Generate command";
+    $("#add-go").textContent = mode === "ssh" ? "Launch" : "Generate command";
   }));
   $("#add-close").onclick = () => { modal.close(); render(); };
-  $("#add-go").onclick = () => (mode === "ssh" ? startAdopt() : makeCommand());
+  $("#add-go").onclick = () => (mode === "ssh" ? startLaunch() : makeCommand());
   modal.showModal();
 }
 
@@ -162,7 +162,7 @@ async function makeCommand() {
   } catch (e) { toast(e.message); }
 }
 
-async function startAdopt() {
+async function startLaunch() {
   const body = {
     host: $("#a-host").value.trim(), port: +$("#a-port").value || 22, username: $("#a-user").value.trim(),
     password: $("#a-pass").value, private_key: $("#a-key").value, name: $("#a-name").value.trim(),
@@ -171,7 +171,7 @@ async function startAdopt() {
   const go_ = $("#add-go"); go_.disabled = true;
   const log = $("#a-log"); log.hidden = false; log.textContent = "Starting…";
   try {
-    const job = await api("api/adopt", { method: "POST", body });
+    const job = await api("api/launch", { method: "POST", body });
     $("#a-pass").value = ""; $("#a-key").value = "";
     const poll = setInterval(async () => {
       try {
@@ -179,7 +179,7 @@ async function startAdopt() {
         log.textContent = j.log.join("\n"); log.scrollTop = log.scrollHeight;
         if (j.status !== "running") {
           clearInterval(poll); go_.disabled = false;
-          if (j.status === "success") { toast("Satellite adopted"); setTimeout(() => { modal.close(); go(j.satellite_id); }, 1200); }
+          if (j.status === "success") { toast("Satellite launched"); setTimeout(() => { modal.close(); go(j.satellite_id); }, 1200); }
         }
       } catch (e) { clearInterval(poll); go_.disabled = false; toast(e.message); }
     }, 1000);
@@ -905,16 +905,69 @@ async function tabSettings(el, s) {
   on("#e-restart-ser", async () => { try { await satApi("services/ser2net/restart", { method: "POST" }); toast("ser2net restarted"); } catch (e) { toast(e.message); } });
   on("#e-reboot", reboot);
   on("#e-off", async () => { if (!confirm(`Shut down ${s.name}? You will need physical access to power it back on.`)) return; try { await satApi("system/shutdown", { method: "POST" }); toast("Shutting down…"); } catch (e) { toast(e.message); } });
-  $("#e-remove").onclick = () => {
-    modalBody.innerHTML = `<h3>Remove ${esc(s.name)}?</h3>
-      <p>This removes the satellite and its Home Assistant entities.</p>
-      <label class="check"><input type="checkbox" id="rm-un" ${s.online ? "checked" : "disabled"}> ${containerMode(s) ? "Also uninstall the agent (removes the hasat-agent container and its data)" : "Also uninstall the agent from the Pi (restores ser2net config and removes firewall rules)"}</label>
-      <div class="modal-actions"><button type="button" class="btn" id="rm-no">Cancel</button><button type="button" class="btn danger" id="rm-yes">Remove</button></div>`;
-    $("#rm-no").onclick = () => modal.close();
-    $("#rm-yes").onclick = async () => {
-      try { await api(`api/sat/${s.id}?uninstall=${$("#rm-un").checked ? 1 : 0}`, { method: "DELETE" }); modal.close(); toast("Satellite removed"); go(); } catch (e) { toast(e.message); }
-    };
-    modal.showModal();
+  $("#e-remove").onclick = () => openRemoveDialog(s);
+}
+
+// Manual cleanup for satellites that are offline (the agent cannot clean up itself).
+const MANUAL_CLEANUP = {
+  host: `sudo systemctl disable --now hasat-agent
+sudo rm -f /etc/systemd/system/hasat-agent.service && sudo systemctl daemon-reload
+sudo nft delete table inet hasat 2>/dev/null
+[ -f /etc/ser2net.yaml.hasat-orig ] && sudo mv /etc/ser2net.yaml.hasat-orig /etc/ser2net.yaml
+sudo rm -rf /opt/hasat-agent* /etc/hasat-agent /var/lib/hasat-agent /media/hasat`,
+  container: `sudo docker rm -f hasat-agent
+sudo docker rmi hasat-agent:local
+sudo rm -rf /volume1/docker/hasat-agent`,
+};
+
+async function openRemoveDialog(s) {
+  const container = containerMode(s);
+  modalBody.innerHTML = `<h3>Remove ${esc(s.name)}?</h3>
+    <p>The satellite and its Home Assistant entities are removed from Home Assistant.</p>
+    <label class="check"><input type="checkbox" id="rm-un" ${s.online ? "checked" : "disabled"}>
+      Also remove HA Satellite from ${esc(s.host)}, leaving no trace on the device</label>
+    <div id="rm-plan" class="muted">${s.online ? "Asking the device what will be removed…" : ""}</div>
+    ${s.online ? "" : `<p class="warn">The satellite is offline, so it cannot clean itself up. To remove every trace, run this on the device:</p>
+      <pre class="out">${esc(MANUAL_CLEANUP[container ? "container" : "host"])}</pre>`}
+    <div class="modal-actions"><button type="button" class="btn" id="rm-no">Cancel</button><button type="button" class="btn danger" id="rm-yes">Remove</button></div>`;
+  modal.showModal();
+  $("#rm-no").onclick = () => modal.close();
+
+  const renderPlan = async () => {
+    const box = $("#rm-plan");
+    if (!box || !s.online) return;
+    if (!$("#rm-un").checked) { box.innerHTML = '<p class="muted">The device is left exactly as it is; only Home Assistant forgets it.</p>'; return; }
+    const docker = $("#rm-docker") ? $("#rm-docker").checked : false;
+    try {
+      const p = await satApi(`agent/uninstall-plan?remove_docker=${docker ? 1 : 0}`);
+      box.innerHTML = `
+        <div style="margin-top:6px"><b>Removed from the device</b><ul>${p.remove.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+        ${p.keep.length ? `<div><b>Kept</b><ul>${p.keep.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+        ${p.docker_installed_by_hasat ? `<label class="check"><input type="checkbox" id="rm-docker" ${docker ? "checked" : ""}>
+          Also remove Docker (installed by HA Satellite) <b class="bad">and all containers, images and volumes</b></label>` : ""}`;
+      if ($("#rm-docker")) $("#rm-docker").onchange = renderPlan;
+    } catch (e) {
+      box.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+    }
+  };
+  $("#rm-un").onchange = renderPlan;
+  renderPlan();
+
+  $("#rm-yes").onclick = async () => {
+    const uninstall = $("#rm-un").checked;
+    const docker = $("#rm-docker") ? $("#rm-docker").checked : false;
+    if (docker && !confirm("Remove Docker and ALL containers, images and volumes on this device? This cannot be undone.")) return;
+    $("#rm-yes").disabled = true;
+    try {
+      await api(`api/sat/${s.id}?uninstall=${uninstall ? 1 : 0}&remove_docker=${docker ? 1 : 0}`, { method: "DELETE" });
+      modal.close();
+      toast(uninstall ? `${s.name} removed; the device is erasing HA Satellite now` : `${s.name} removed from Home Assistant`, 5000);
+      go();
+    } catch (e) {
+      $("#rm-yes").disabled = false;
+      $("#rm-plan").innerHTML = `<p class="bad">Cleanup on the device failed: ${esc(e.message)}</p>
+        <p class="muted">Nothing was removed. Try again, or untick the option above to only remove it from Home Assistant.</p>`;
+    }
   };
 }
 

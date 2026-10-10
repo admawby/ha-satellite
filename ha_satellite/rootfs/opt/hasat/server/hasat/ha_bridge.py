@@ -275,8 +275,19 @@ class HABridge:
                 if resp.status >= 400:
                     _LOGGER.debug("REST publish of %s failed: %s", entity_id, resp.status)
 
-    def remove(self, sat: Satellite) -> None:
-        """Delete discovery entries so HA drops the device."""
+    async def remove(self, sat: Satellite) -> None:
+        """Delete the satellite's entities from HA (MQTT discovery and REST states)."""
+        if self._http and SUPERVISOR_TOKEN and not self._mqtt:
+            for ent in SENSORS:
+                if ent.component == "button":
+                    continue
+                domain = "binary_sensor" if ent.component == "binary_sensor" else "sensor"
+                try:
+                    async with self._http.delete(f"{SUPERVISOR_URL}/core/api/states/{domain}.hasat_{sat.slug}_{ent.key}",
+                                                 timeout=aiohttp.ClientTimeout(total=10)):
+                        pass
+                except aiohttp.ClientError:
+                    pass
         if self._mqtt and self._mqtt_connected:
             for ent in SENSORS:
                 self._mqtt.publish(f"{DISCOVERY_PREFIX}/{ent.component}/hasat_{sat.id}/{ent.key}/config", "", retain=True)

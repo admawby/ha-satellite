@@ -30,7 +30,7 @@ terminal and Docker management only); see the docs.
 1. **Settings → Add-ons → Add-on store → ⋮ → Repositories**, add
    `https://github.com/admawby/ha-satellite`
 2. Install **HA Satellite**, start it, enable **Show in sidebar**
-3. Open **Satellites → Add satellite** and adopt your Pi
+3. Open **Satellites → Launch satellite** and launch a satellite on your Pi
 
 Full documentation: [ha_satellite/DOCS.md](./ha_satellite/DOCS.md)
 

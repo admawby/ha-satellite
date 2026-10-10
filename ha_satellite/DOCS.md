@@ -3,7 +3,7 @@
 Turn any Raspberry Pi on your network into a **satellite** of this Home Assistant
 instance. From the **Satellites** panel in the sidebar you can:
 
-- **Adopt** a Pi with one click (SSH) or with a one-line install command
+- **Launch** a satellite on a Pi with one click (SSH) or with a one-line install command
 - **Share USB radios** (Z-Wave, Zigbee, Thread/Matter sticks) over the network so
   Z-Wave JS, Zigbee2MQTT or ZHA running on HA can use them
 - **Monitor** CPU temperature, CPU/memory/disk usage, load, uptime, under-voltage
@@ -23,7 +23,7 @@ instance. From the **Satellites** panel in the sidebar you can:
 | Hardware | Any Raspberry Pi (3, 4, 5, Zero 2 W) or other Debian-based Linux box; Synology NAS in [container mode](#synology-nas-container-mode) |
 | OS | Raspberry Pi OS / Debian 11+ / Ubuntu 22.04+ with systemd |
 | Network | Same LAN as Home Assistant; a **fixed IP** (DHCP reservation) is strongly recommended |
-| Access | SSH with a sudo-capable user (for one-click adoption), or a console to paste one command |
+| Access | SSH with a sudo-capable user (for one-click launching), or a console to paste one command |
 
 The Pi needs internet access during installation (it installs `python3-aiohttp`,
 `python3-psutil`, `ser2net` and `nftables` with `apt`).
@@ -49,7 +49,7 @@ Assistant's built-in **Synology DSM** integration for NAS-specific data such as 
 health and DSM updates.
 
 **Requirements:** DSM 7 with **Container Manager** installed (Package Center), and
-SSH enabled (*Control Panel → Terminal & SNMP*) for one-click adoption with an
+SSH enabled (*Control Panel → Terminal & SNMP*) for one-click launching with an
 administrator account. Otherwise run the install command from an SSH session with
 `sudo`.
 
@@ -63,21 +63,19 @@ administrator account. Otherwise run the install command from an SSH session wit
   the agent itself.
 - If DSM's firewall is enabled, allow TCP `8765` from your Home Assistant host.
 
-To remove it, use **Settings → Remove satellite… → Also uninstall the agent**, or
-delete the `hasat-agent` container in Container Manager and the
-`/volume1/docker/hasat-agent` folder.
+To remove it without a trace, see [Removing a satellite](#removing-a-satellite).
 
 ## Installation
 
 1. In Home Assistant go to **Settings → Add-ons → Add-on store → ⋮ → Repositories**
    and add `https://github.com/admawby/ha-satellite`.
 2. Install **HA Satellite**, start it and enable **Show in sidebar**.
-3. Open **Satellites** and click **Add satellite**.
+3. Open **Satellites** and click **Launch satellite**.
 
-### Option A — adopt over SSH
+### Option A — launch over SSH
 
 Enter the Pi's address, an SSH user (e.g. `pi`) and its password, then click
-**Adopt**. The add-on logs in once, runs the installer with `sudo` and shows its
+**Launch**. The add-on logs in once, runs the installer with `sudo` and shows its
 output live. The password is used only for that session and is never stored. The
 SSH host key fingerprint is shown in the log so you can verify it.
 
@@ -229,7 +227,7 @@ sensor and an **Update containers** button for each satellite.
 | Option | Default | Description |
 | --- | --- | --- |
 | `enrollment_host` | *auto* | IP/hostname satellites use to reach Home Assistant. Detected from the Supervisor if empty. |
-| `allowed_networks` | RFC1918 ranges | Satellites may only be adopted/enrolled from these networks. Tighten to your LAN, e.g. `192.168.1.0/24`. |
+| `allowed_networks` | RFC1918 ranges | Satellites may only be launched/enrolled from these networks. Tighten to your LAN, e.g. `192.168.1.0/24`. |
 | `extra_trusted_ips` | `[]` | Additional addresses allowed through each satellite's firewall (e.g. a second HA host or the IP HA really uses if it sits behind NAT). |
 | `agent_port` | `8765` | TCP port the agent listens on for newly enrolled satellites. |
 | `poll_interval` | `30` | Seconds between health polls. |
@@ -260,7 +258,7 @@ install command follows automatically.
   turned off per satellite.
 - **Ingress only.** The UI is served through Home Assistant's authenticated
   ingress; direct connections to the UI port are refused.
-- **No secrets stored.** SSH credentials used for adoption are kept in memory for
+- **No secrets stored.** SSH credentials used for launching are kept in memory for
   that session only.
 
 > **The radio bridges themselves are plain TCP** (that is what Z-Wave JS, Z2M and
@@ -272,14 +270,56 @@ provides a root shell. Treat access to the Home Assistant admin UI accordingly.
 
 ## Removing a satellite
 
-**Settings → Remove satellite…** deletes it from Home Assistant and (optionally)
-uninstalls the agent, restores the original `ser2net` configuration and deletes
-the firewall table. To remove the agent by hand:
+Open the satellite → **Settings → Remove satellite…**. With **Also remove HA
+Satellite from the device, leaving no trace** ticked, the dialog first asks the
+device exactly what it will remove and keep, then:
+
+**Raspberry Pi / Debian (host mode)**
+- stops and deletes the `hasat-agent` service and unit file
+- deletes the agent code, certificates, settings and state
+  (`/opt/hasat-agent`, `/etc/hasat-agent`, `/var/lib/hasat-agent`)
+- deletes the firewall table `inet hasat`
+- restores your original `/etc/ser2net.yaml` (or deletes it if the installer
+  created it), and unmounts drives mounted under `/media/hasat`
+- uninstalls the apt packages the installer added, but only those nothing
+  else on the device needs any more. Packages that were already installed are
+  never touched
+- optionally removes **Docker**, if it was installed with the Docker tab's
+  *Install Docker* button. This also deletes all containers, images and volumes,
+  so it has its own checkbox and a second confirmation
+
+**Synology / container mode**
+- deletes the `hasat-agent` container, its image (and `python:3.12-slim` if the
+  installer downloaded it) and the `/volume1/docker/hasat-agent` folder
+- Container Manager, DSM and your other containers are not touched
+
+The installer records what it adds (`install-record.json`), and removal undoes
+exactly that. The final steps run as a short-lived system job after the agent has
+stopped, so nothing of the agent itself is left running. The only things that stay
+are log lines already written to the shared system journal. Home Assistant also
+forgets the satellite's entities, both MQTT devices and plain `sensor.hasat_*`
+states.
+
+If the device does not confirm the cleanup (for example it went offline halfway),
+the satellite stays in Home Assistant so you can retry. Untick the option to only
+remove it from Home Assistant.
+
+Satellites installed with versions before 0.5.0 have no install record. Their
+agent, files, service and firewall are still removed, but apt packages are kept.
+For a satellite that is **offline**, the dialog shows the commands to run on the
+device instead:
 
 ```bash
+# Raspberry Pi / Debian
 sudo systemctl disable --now hasat-agent
-sudo rm -rf /opt/hasat-agent /etc/hasat-agent /var/lib/hasat-agent /etc/systemd/system/hasat-agent.service
+sudo rm -f /etc/systemd/system/hasat-agent.service && sudo systemctl daemon-reload
 sudo nft delete table inet hasat
+[ -f /etc/ser2net.yaml.hasat-orig ] && sudo mv /etc/ser2net.yaml.hasat-orig /etc/ser2net.yaml
+sudo rm -rf /opt/hasat-agent* /etc/hasat-agent /var/lib/hasat-agent /media/hasat
+
+# Synology (SSH)
+sudo docker rm -f hasat-agent && sudo docker rmi hasat-agent:local
+sudo rm -rf /volume1/docker/hasat-agent
 ```
 
 ## Troubleshooting

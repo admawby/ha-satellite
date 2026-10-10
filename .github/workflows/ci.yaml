@@ -52,6 +52,17 @@ jobs:
           printf 'productversion="7.2.1"\nbuildnumber="69057"\nsmallfixnumber="5"\n' | sudo tee /etc.defaults/VERSION
       - run: python tests/test_container_agent.py
 
+  host-install:
+    name: Real install + trace-free removal (host mode)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install aiohttp cryptography asyncssh paho-mqtt
+      - run: python tests/test_host_install_real.py
+
   build:
     name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest

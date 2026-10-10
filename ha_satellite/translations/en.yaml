@@ -7,7 +7,7 @@ configuration:
   allowed_networks:
     name: Allowed networks
     description: >-
-      Satellites can only be adopted or enrolled from these networks (CIDR).
+      Satellites can only be launched or enrolled from these networks (CIDR).
   extra_trusted_ips:
     name: Extra trusted IPs
     description: >-

@@ -11,11 +11,11 @@ import shutil
 import ssl
 import subprocess
 import tarfile
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from aiohttp import web
 
-from . import __version__, files, firewall, metrics, mode, serial_bridge, storage, terminal, usb
+from . import __version__, cleanup, files, firewall, metrics, mode, serial_bridge, storage, terminal, usb
 from .settings import (CA_FILE, CERT_FILE, INSTALL_DIR, KEY_FILE, SYSTEMD_DIR, load_config, load_settings,
                        merge_settings, save_settings)
 from .docker_mgr import DockerError, DockerManager
@@ -376,36 +376,42 @@ class Agent:
         asyncio.get_running_loop().call_later(1.5, self.restart)
         return web.json_response({"ok": True, "restarting": True})
 
-    async def h_uninstall(self, _r: web.Request) -> web.Response:
-        _LOGGER.warning("Uninstall requested by manager")
-        if mode.container_mode():
-            # Remove our data (certificates, settings, code), then the container itself.
-            base = INSTALL_DIR.parent
-            for sub in ("etc", "state", INSTALL_DIR.name, INSTALL_DIR.name + ".old"):
-                shutil.rmtree(base / sub, ignore_errors=True)
-            name = mode.own_container()
+    async def _host_base(self) -> Optional[str]:
+        """Host path of the agent's data folder (container mode)."""
+        base = os.environ.get("HASAT_HOST_BASE") or cleanup.load_record().get("host_base")
+        name = mode.own_container()
+        if not base and name:
+            try:
+                info = await self.docker.api.request("GET", f"/containers/{name}/json")
+                base = next((m["Source"] for m in info.get("Mounts", []) if m.get("Destination") == "/opt/hasat"), None)
+            except DockerError:
+                base = None
+        return base
 
-            async def remove_self() -> None:
-                await asyncio.sleep(1)
-                try:
-                    await self.docker.api.request("DELETE", f"/containers/{name}", params={"force": "1"})
-                except DockerError as err:
-                    _LOGGER.error("Could not remove agent container: %s", err)
-                    os._exit(0)
+    async def h_uninstall_plan(self, request: web.Request) -> web.Response:
+        remove_docker = request.query.get("remove_docker") == "1"
+        return web.json_response(cleanup.plan(mode.container_mode(), remove_docker, await self._host_base()))
 
-            if name:
-                asyncio.ensure_future(remove_self())
-            return web.json_response({"ok": True})
-        serial_bridge.restore()
-        firewall.remove()
-        script = (
-            "sleep 2; systemctl disable --now hasat-agent; "
-            "rm -f /etc/systemd/system/hasat-agent.service; systemctl daemon-reload; "
-            "rm -rf /opt/hasat-agent /opt/hasat-agent.old /etc/hasat-agent /var/lib/hasat-agent; "
-            "systemctl restart ser2net || true"
-        )
-        subprocess.Popen(["systemd-run", "--unit", "hasat-uninstall", "/bin/sh", "-c", script], start_new_session=True)
-        return web.json_response({"ok": True})
+    def launch_cleanup(self, script: str) -> None:
+        """Run the final cleanup as a transient systemd unit on the host, so it outlives the agent."""
+        cmd = mode.host_cmd(["systemd-run", "--unit", "hasat-uninstall", "--collect", "--quiet", "/bin/sh", "-c", script])
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            raise RuntimeError(f"could not start cleanup: {proc.stderr.strip() or proc.returncode}")
+
+    async def h_uninstall(self, request: web.Request) -> web.Response:
+        body = await request.json() if request.can_read_body else {}
+        remove_docker = bool((body or {}).get("remove_docker"))
+        container = mode.container_mode()
+        host_base = await self._host_base() if container else None
+        report = cleanup.plan(container, remove_docker, host_base)
+        _LOGGER.warning("Removing HA Satellite from this device: %s", "; ".join(report["remove"]))
+        if container:
+            script = cleanup.container_script(mode.own_container() or "hasat-agent", host_base)
+        else:
+            script = cleanup.host_script(remove_docker)
+        await asyncio.get_running_loop().run_in_executor(None, self.launch_cleanup, script)
+        return web.json_response(dict(report, ok=True))
 
     # ------------------------------------------------------------------ app
     def build_app(self) -> web.Application:
@@ -467,6 +473,7 @@ class Agent:
         r.add_get("/api/docker/containers/{name}/logs", self.h_docker_logs)
         r.add_post("/api/agent/update", self.h_agent_update)
         r.add_post("/api/agent/uninstall", self.h_uninstall)
+        r.add_get("/api/agent/uninstall-plan", self.h_uninstall_plan)
         return app
 
     async def run(self) -> None:

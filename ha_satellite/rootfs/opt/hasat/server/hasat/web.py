@@ -39,6 +39,7 @@ PROXY_ALLOW = [
     ("GET", r"files/(list|read)"),
     ("PUT", r"files/write"),
     ("POST", r"files/(mkdir|rename|delete)"),
+    ("GET", r"agent/uninstall-plan"),
     ("GET", r"docker"),
     ("POST", r"docker/install"),
     ("POST", r"docker/(check|update)"),
@@ -95,7 +96,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
         tok = mgr.store.new_token(str(body.get("name", ""))[:64])
         return web.json_response({"command": mgr.install_command(tok.token), "expires": tok.expires})
 
-    async def adopt(request: web.Request) -> web.Response:
+    async def launch(request: web.Request) -> web.Response:
         body = await request.json()
         host = str(body.get("host", "")).strip()
         username = str(body.get("username", "")).strip()
@@ -103,7 +104,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
             return web.json_response({"error": "host and username are required"}, status=400)
         if not body.get("password") and not body.get("private_key"):
             return web.json_response({"error": "password or private key required"}, status=400)
-        job = mgr.adopter.start(
+        job = mgr.launcher.start(
             host=host,
             port=int(body.get("port") or 22),
             username=username,
@@ -114,7 +115,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
         return web.json_response(job.to_api())
 
     async def job(request: web.Request) -> web.Response:
-        j = mgr.adopter.jobs.get(request.match_info["job_id"])
+        j = mgr.launcher.jobs.get(request.match_info["job_id"])
         if not j:
             raise web.HTTPNotFound()
         return web.json_response(j.to_api())
@@ -123,7 +124,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
         sat = sat_or_404(request)
         body = await request.json()
         if name := str(body.get("name", "")).strip():
-            mgr.bridge.remove(sat)  # entity ids follow the name
+            await mgr.bridge.remove(sat)  # entity ids follow the name
             sat.name = mgr.store.unique_name(name[:64]) if name != sat.name else sat.name
         if host := str(body.get("host", "")).strip():
             if not mgr.options.address_allowed(host):
@@ -135,8 +136,9 @@ def build_ui_app(mgr: "Manager") -> web.Application:
 
     async def delete_sat(request: web.Request) -> web.Response:
         sat = sat_or_404(request)
-        await mgr.remove(sat, uninstall=request.query.get("uninstall") == "1")
-        return web.json_response({"ok": True})
+        report = await mgr.remove(sat, uninstall=request.query.get("uninstall") == "1",
+                                  remove_docker=request.query.get("remove_docker") == "1")
+        return web.json_response(dict(report, ok=True))
 
     async def agent_update(request: web.Request) -> web.Response:
         sat = sat_or_404(request)
@@ -231,7 +233,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
     app.router.add_static("/static/", WEB_DIR, show_index=False)
     app.router.add_get("/api/state", state)
     app.router.add_post("/api/enroll", enroll_token)
-    app.router.add_post("/api/adopt", adopt)
+    app.router.add_post("/api/launch", launch)
     app.router.add_get("/api/jobs/{job_id}", job)
     app.router.add_patch("/api/sat/{sat_id}", update_sat)
     app.router.add_delete("/api/sat/{sat_id}", delete_sat)

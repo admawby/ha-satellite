@@ -3,7 +3,7 @@
 ![Supports aarch64 Architecture][aarch64-shield]
 ![Supports amd64 Architecture][amd64-shield]
 
-Adopt remote Raspberry Pis as satellites of your Home Assistant instance.
+Launch satellites of your Home Assistant instance on remote Raspberry Pis (and Synology NAS units).
 
 - Share USB Z-Wave / Zigbee / Thread sticks over the network (Z-Wave JS, Zigbee2MQTT, ZHA)
 - CPU temperature, load, memory, disk, under-voltage and throttling as HA entities

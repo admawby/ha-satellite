@@ -93,6 +93,34 @@ write("config.json", json.dumps({
 print("[hasat] Enrolled as %s (%s)" % (resp["name"], resp["id"]))
 '
 
+# Everything this installer adds is written to install-record.json so that removing
+# the satellite can undo exactly that, and nothing that was on the machine before.
+RECORD_PY='
+import json, os, sys
+path = sys.argv[1]
+rec = {}
+if os.path.exists(path):
+    try:
+        rec = json.load(open(path))
+    except ValueError:
+        rec = {}
+for key, value in json.loads(sys.argv[2]).items():
+    if isinstance(value, list):
+        rec[key] = sorted(set(rec.get(key, [])) | set(value))
+    elif key not in rec:  # keep facts from the first install
+        rec[key] = value
+if len(sys.argv) > 3:
+    added = [p for p in sys.argv[3].split() if p]
+    rec["packages_added"] = sorted(set(rec.get("packages_added", [])) | set(added))
+with open(path, "w") as fh:
+    json.dump(rec, fh, indent=2)
+os.chmod(path, 0o600)
+'
+
+installed_packages() {
+  dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null | awk '$1 == "ii" {print $2}' | sort -u
+}
+
 # ----------------------------------------------------------------- host mode
 install_debian() {
   local install_dir=/opt/hasat-agent etc_dir=/etc/hasat-agent state_dir=/var/lib/hasat-agent
@@ -102,10 +130,15 @@ install_debian() {
   info "Installing HA Satellite agent on $(hostname) (${model})"
 
   info "Installing dependencies ..."
+  local before after added ser2net_conf=false
+  [[ -f /etc/ser2net.yaml ]] && ser2net_conf=true
+  before="$(installed_packages)"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q
   apt-get install -y -q --no-install-recommends \
     python3 python3-aiohttp python3-psutil ser2net nftables curl openssl ca-certificates >/dev/null
+  after="$(installed_packages)"
+  added="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") | tr '\n' ' ')"
 
   if systemctl is-active --quiet hasat-agent 2>/dev/null; then
     info "Existing agent found - re-enrolling"
@@ -117,6 +150,8 @@ install_debian() {
   mkdir -p "${state_dir}"
   chmod 700 "${state_dir}"
   python3 -c "${WRITE_FILES_PY}" "${TMP}/enroll.json" "${etc_dir}"
+  python3 -c "${RECORD_PY}" "${state_dir}/install-record.json" \
+    "{\"mode\": \"host\", \"ser2net_conf_existed\": ${ser2net_conf}}" "${added}"
 
   info "Installing service ..."
   install -m 0644 "${install_dir}/hasat-agent.service" /etc/systemd/system/hasat-agent.service
@@ -139,8 +174,10 @@ install_container() {
   command -v docker >/dev/null || fail "Docker is required. On Synology, install Container Manager from Package Center first."
   docker info >/dev/null 2>&1 || fail "Docker is installed but not running (start Container Manager)."
   local vol base model
-  vol="$(ls -d /volume[0-9]* 2>/dev/null | head -n1 || true)"
-  vol="${vol:-/}"
+  vol=/
+  for candidate in /volume[0-9]*; do
+    if [[ -d "${candidate}" ]]; then vol="${candidate}"; break; fi
+  done
   if [[ "${vol}" == "/" ]]; then base=/opt/hasat; else base="${vol}/docker/hasat-agent"; fi
   model="$(cat /proc/sys/kernel/syno_hw_version 2>/dev/null || uname -m)"
   info "Installing HA Satellite agent on $(hostname) (${platform} ${model}) in container mode"
@@ -154,6 +191,10 @@ install_container() {
   chmod 700 "${base}"
   download_agent "${base}/hasat-agent"
 
+  local pulled_base=()
+  if ! docker image inspect python:3.12-slim >/dev/null 2>&1; then
+    pulled_base=("python:3.12-slim")
+  fi
   info "Building the agent image (first time: downloads python:3.12-slim) ..."
   docker build -q -t hasat-agent:local "${base}/hasat-agent/container" >/dev/null
 
@@ -162,6 +203,11 @@ install_container() {
   chmod 700 "${base}/state"
   docker run --rm -v "${TMP}:/t:ro" -v "${base}/etc:/e" hasat-agent:local \
     python3 -c "${WRITE_FILES_PY}" /t/enroll.json /e
+  local images='"hasat-agent:local"'
+  if [[ ${#pulled_base[@]} -gt 0 ]]; then images+=', "python:3.12-slim"'; fi
+  docker run --rm -v "${base}/state:/s" hasat-agent:local \
+    python3 -c "${RECORD_PY}" /s/install-record.json \
+    "{\"mode\": \"container\", \"host_base\": \"${base}\", \"images\": [${images}]}"
 
   info "Starting the agent container ..."
   sh "${base}/hasat-agent/container/run.sh" "${base}" "${vol}" hasat-agent:local >/dev/null

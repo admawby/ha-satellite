@@ -29,6 +29,7 @@ docker run -d --name "$NAME" \
   --label hasat.role=agent \
   -e HASAT_MODE=container \
   -e HASAT_CONTAINER_NAME="$NAME" \
+  -e HASAT_HOST_BASE="$BASE" \
   -e HASAT_INSTALL_DIR=/opt/hasat/hasat-agent \
   -e HASAT_ETC=/opt/hasat/etc \
   -e HASAT_STATE=/opt/hasat/state \

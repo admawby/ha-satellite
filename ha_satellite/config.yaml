@@ -1,8 +1,8 @@
 name: HA Satellite
-version: "0.4.0"
+version: "0.5.0"
 slug: ha_satellite
 description: >-
-  Adopt remote Raspberry Pis as satellites of this Home Assistant instance:
+  Launch satellites of this Home Assistant instance on remote Raspberry Pis:
   remote Z-Wave/Zigbee USB sticks, health sensors, a web terminal and
   automatic package updates — all over mutually-authenticated TLS.
 url: https://github.com/admawby/ha-satellite

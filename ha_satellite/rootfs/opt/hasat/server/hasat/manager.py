@@ -10,7 +10,7 @@ import time
 
 import aiohttp
 
-from .adopt import Adopter
+from .launch import Launcher
 from .agent_client import AgentClient, AgentError, build_agent_bundle
 from .config import AGENT_SRC_DIR, DATA_DIR, ENROLL_PORT, SUPERVISOR_TOKEN, SUPERVISOR_URL, Options
 from .ha_bridge import HABridge
@@ -33,7 +33,7 @@ class Manager:
         self.store = Store(DATA_DIR / "satellites.json")
         self.client = AgentClient(self.pki.client_ssl_context())
         self.bridge = HABridge(self.handle_ha_command)
-        self.adopter = Adopter(self)
+        self.launcher = Launcher(self)
         self.agent_bundle = build_agent_bundle(AGENT_SRC_DIR)
         self.agent_version = _agent_version()
         self.install_template = (AGENT_SRC_DIR / "install.sh").read_text()
@@ -125,7 +125,7 @@ class Manager:
         return script
 
     def on_enrolled(self, sat: Satellite, token: str) -> None:
-        self.adopter.enrolled(token, sat.id)
+        self.launcher.enrolled(token, sat.id)
         # Give the agent a moment to start, then poll it.
         asyncio.get_running_loop().call_later(5, lambda: asyncio.create_task(self.poll_one(sat.id)))
 
@@ -196,12 +196,16 @@ class Manager:
         except AgentError as err:
             _LOGGER.warning("%s on %s failed: %s", action, sat.name, err)
 
-    async def remove(self, sat: Satellite, uninstall: bool) -> None:
-        if uninstall and sat.online:
-            try:
-                await self.client.request(sat, "POST", "/api/agent/uninstall", timeout=15)
-            except AgentError as err:
-                _LOGGER.warning("Uninstall request to %s failed: %s", sat.name, err)
-        self.bridge.remove(sat)
+    async def remove(self, sat: Satellite, uninstall: bool, remove_docker: bool = False) -> dict:
+        """Forget a satellite. With uninstall, the device first removes every trace of
+        HA Satellite; if that request fails the satellite is kept so it can be retried."""
+        report: dict = {"uninstalled": False}
+        if uninstall:
+            report = await self.client.request(
+                sat, "POST", "/api/agent/uninstall", json={"remove_docker": remove_docker}, timeout=60)
+            report["uninstalled"] = True
+            _LOGGER.info("Satellite %s is removing HA Satellite from the device", sat.name)
+        await self.bridge.remove(sat)
         self.store.satellites.pop(sat.id, None)
         self.store.save()
+        return report

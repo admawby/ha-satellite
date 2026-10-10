@@ -1,4 +1,4 @@
-"""Adopt a Pi over SSH: log in once with the user's credentials and run the installer.
+"""Launch a satellite over SSH: log in once with the user's credentials and run the installer.
 
 Credentials are used for this single session only and are never stored or logged.
 The installer itself is fetched by the Pi from the enrollment endpoint with a
@@ -45,7 +45,7 @@ class Job:
         }
 
 
-class Adopter:
+class Launcher:
     def __init__(self, mgr: "Manager") -> None:
         self.mgr = mgr
         self.jobs: dict[str, Job] = {}
@@ -69,7 +69,7 @@ class Adopter:
             addrs = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
             ip = addrs[0][4][0]
             if not self.mgr.options.address_allowed(ip):
-                raise RuntimeError(f"{host} ({ip}) is not inside allowed_networks; refusing to adopt it")
+                raise RuntimeError(f"{host} ({ip}) is not inside allowed_networks; refusing to launch a satellite there")
 
             tok = self.mgr.store.new_token(name)
             self.token_jobs[tok.token] = job
@@ -110,7 +110,7 @@ class Adopter:
                     raise RuntimeError(f"installer exited with status {proc.exit_status}")
 
             if job.satellite_id:
-                job.write("Satellite adopted successfully.")
+                job.write("Satellite launched successfully.")
                 job.status = "success"
                 await self.mgr.poll_one(job.satellite_id)
             else:
@@ -119,7 +119,7 @@ class Adopter:
             job.write(f"ERROR: authentication failed ({err.reason})")
             job.status = "failed"
         except Exception as err:  # noqa: BLE001 - surface every failure to the UI
-            _LOGGER.warning("Adoption of %s failed: %s", host, err)
+            _LOGGER.warning("Launching a satellite on %s failed: %s", host, err)
             job.write(f"ERROR: {err}")
             job.status = "failed"
         finally:
