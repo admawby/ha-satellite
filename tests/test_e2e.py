@@ -71,6 +71,7 @@ import docker_cases  # noqa: E402
 import files_cases  # noqa: E402
 import mode_cases  # noqa: E402
 import removal_cases  # noqa: E402
+import terminal_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -258,18 +259,7 @@ async def main() -> None:
             async with http.post(f"{ui}/api/sat/{sat.id}/proxy/exec", json={"command": "echo hello-$((40+2))"}) as r:
                 out = await r.json()
                 check(out["rc"] == 0 and "hello-42" in out["output"], "command runner")
-            async with http.ws_connect(f"{ui}/api/sat/{sat.id}/terminal") as ws:
-                await ws.send_str(json.dumps({"t": "r", "c": 100, "r": 30}))
-                await ws.send_str(json.dumps({"t": "i", "d": "echo term-$((6*7))\n"}))
-                seen = ""
-                async def read():
-                    nonlocal seen
-                    async for msg in ws:
-                        seen += msg.data.decode(errors="ignore") if isinstance(msg.data, bytes) else str(msg.data)
-                        if "term-42" in seen:
-                            return
-                await asyncio.wait_for(read(), 15)
-                check("term-42" in seen, "interactive terminal through ingress proxy")
+            await terminal_cases.run(check, http, ui, sat.id)
 
     print("usb & storage")
     async with aiohttp.ClientSession() as http:
