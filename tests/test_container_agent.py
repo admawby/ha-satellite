@@ -95,15 +95,19 @@ async def main() -> None:
     (etc / "config.json").write_text(json.dumps({"id": SAT_ID, "name": "NAS", "controller_cn": "hasat-controller",
                                                  "trusted_ips": ["127.0.0.1"], "agent_port": PORT}))
 
-    print("building agent image ...")
-    sh("docker", "build", "-q", "--build-arg", f"BASE_IMAGE={BASE_IMAGE}", "-t", "hasat-agent:local",
-       str(base / "hasat-agent" / "container"))
-    sh("sh", str(base / "hasat-agent" / "container" / "run.sh"), str(base), str(vol), "hasat-agent:local")
+    # Like the installer: the image was "downloaded by the installer", so removal must delete it.
+    sh("docker", "pull", "-q", BASE_IMAGE)
+    (base / "state").mkdir()
+    (base / "state" / "install-record.json").write_text(json.dumps(
+        {"mode": "container", "host_base": str(base), "images": [BASE_IMAGE]}))
+    sh("sh", str(base / "hasat-agent" / "container" / "run.sh"), str(base), str(vol), BASE_IMAGE)
 
     client = AgentClient(pki.client_ssl_context())
     await client.start()
     sat = Satellite(id=SAT_ID, name="NAS", host="127.0.0.1", port=PORT)
-    st = await wait_up(client, sat)
+    st = await wait_up(client, sat, timeout=180)  # first start installs aiohttp/psutil
+    check((base / "pydeps").is_dir() and any((base / "pydeps").glob(".installed-*")),
+          "Python libraries installed into the agent data folder (nothing built)")
 
     check(st["mode"] == "container" and st["features"] == ["health", "terminal", "docker"], "agent runs in container mode")
     check(st["hostname"] == socket.gethostname(), "host hostname reported (uts=host)")
@@ -178,8 +182,11 @@ async def main() -> None:
             break
         await asyncio.sleep(1)
     check(not base.exists(), "uninstall removed the whole data folder")
-    check(not sh("docker", "images", "-q", "hasat-agent:local", check=False), "uninstall removed the agent image")
-    check(bool(sh("docker", "images", "-q", BASE_IMAGE, check=False)), "base image it did not download is kept")
+    for _ in range(30):
+        if not sh("docker", "images", "-q", BASE_IMAGE, check=False):
+            break
+        await asyncio.sleep(1)
+    check(not sh("docker", "images", "-q", BASE_IMAGE, check=False), "uninstall removed the image the installer downloaded")
     await client.close()
 
 

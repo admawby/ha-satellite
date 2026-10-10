@@ -9,7 +9,7 @@
 #   * installs dependencies (python3-aiohttp, python3-psutil, ser2net, nftables)
 #   * installs the agent to /opt/hasat-agent as a systemd service
 # Synology DSM and other systems without apt but with Docker ("container mode"):
-#   * builds a small agent image and runs it as the container "hasat-agent"
+#   * runs the agent in the container "hasat-agent" on the stock python:3.12-slim image
 #   * only health stats, the terminal and Docker management are enabled
 # Both:
 #   * generate the satellite's private key locally (it never leaves this machine)
@@ -191,28 +191,27 @@ install_container() {
   chmod 700 "${base}"
   download_agent "${base}/hasat-agent"
 
-  local pulled_base=()
-  if ! docker image inspect python:3.12-slim >/dev/null 2>&1; then
-    pulled_base=("python:3.12-slim")
+  # The agent runs on the stock python image (nothing is built on this machine).
+  local image=python:3.12-slim images=''
+  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+    info "Downloading ${image} ..."
+    docker pull -q "${image}" >/dev/null
+    images="\"${image}\""  # removal deletes it again, since we downloaded it
   fi
-  info "Building the agent image (first time: downloads python:3.12-slim) ..."
-  docker build -q -t hasat-agent:local "${base}/hasat-agent/container" >/dev/null
 
   request_certificate "${base}/etc"
   mkdir -p "${base}/state"
   chmod 700 "${base}/state"
-  docker run --rm -v "${TMP}:/t:ro" -v "${base}/etc:/e" hasat-agent:local \
+  docker run --rm -v "${TMP}:/t:ro" -v "${base}/etc:/e" "${image}" \
     python3 -c "${WRITE_FILES_PY}" /t/enroll.json /e
-  local images='"hasat-agent:local"'
-  if [[ ${#pulled_base[@]} -gt 0 ]]; then images+=', "python:3.12-slim"'; fi
-  docker run --rm -v "${base}/state:/s" hasat-agent:local \
+  docker run --rm -v "${base}/state:/s" "${image}" \
     python3 -c "${RECORD_PY}" /s/install-record.json \
     "{\"mode\": \"container\", \"host_base\": \"${base}\", \"images\": [${images}]}"
 
-  info "Starting the agent container ..."
-  sh "${base}/hasat-agent/container/run.sh" "${base}" "${vol}" hasat-agent:local >/dev/null
+  info "Starting the agent container (first start installs its Python libraries) ..."
+  sh "${base}/hasat-agent/container/run.sh" "${base}" "${vol}" "${image}" >/dev/null
 
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 180); do
     if docker logs hasat-agent 2>&1 | grep -q "listening on"; then break; fi
     sleep 1
   done

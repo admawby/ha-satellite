@@ -54,8 +54,9 @@ administrator account. Otherwise run the install command from an SSH session wit
 `sudo`.
 
 **How it runs:**
-- Agent code, certificates and settings are kept in `/volume1/docker/hasat-agent`,
-  so DSM updates do not remove them.
+- The agent runs on the stock `python:3.12-slim` image. Its code, Python libraries,
+  certificates and settings are kept in `/volume1/docker/hasat-agent`, so DSM
+  updates do not remove them and nothing is built on the NAS.
 - The container uses host networking, the host PID/UTS namespaces, `--privileged`
   and the Docker socket. This lets it report the NAS's own stats, open the terminal
   on the NAS and manage its containers. Treat it like root access to the NAS.
@@ -289,8 +290,9 @@ device exactly what it will remove and keep, then:
   so it has its own checkbox and a second confirmation
 
 **Synology / container mode**
-- deletes the `hasat-agent` container, its image (and `python:3.12-slim` if the
-  installer downloaded it) and the `/volume1/docker/hasat-agent` folder
+- deletes the `hasat-agent` container, the `python:3.12-slim` image if the installer
+  downloaded it, and the `/volume1/docker/hasat-agent` folder (which also holds the
+  agent's Python libraries). Nothing is ever built on the NAS, so there's no build cache to leave behind
 - Container Manager, DSM and your other containers are not touched
 
 The installer records what it adds (`install-record.json`), and removal undoes
@@ -318,7 +320,7 @@ sudo nft delete table inet hasat
 sudo rm -rf /opt/hasat-agent* /etc/hasat-agent /var/lib/hasat-agent /media/hasat
 
 # Synology (SSH)
-sudo docker rm -f hasat-agent && sudo docker rmi hasat-agent:local
+sudo docker rm -f hasat-agent
 sudo rm -rf /volume1/docker/hasat-agent
 ```
 

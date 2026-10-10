@@ -12,8 +12,9 @@ host mode (Raspberry Pi OS / Debian / Ubuntu)
   * optionally Docker, if HA Satellite installed it (with all containers/images)
 
 container mode (Synology DSM, ...)
-  * the hasat-agent container, its image (and python:3.12-slim if the installer
-    downloaded it) and the data folder (e.g. /volume1/docker/hasat-agent)
+  * the hasat-agent container, the python:3.12-slim image if the installer
+    downloaded it, and the data folder (e.g. /volume1/docker/hasat-agent), which
+    also holds the agent's Python libraries; nothing is ever built on the host
   * Container Manager / Docker itself is never touched
 
 The final steps run as a transient systemd unit on the host, so they finish after
@@ -86,10 +87,12 @@ def plan(container: bool, remove_docker: bool, host_base: Optional[str] = None) 
     keep: List[str] = []
     if container:
         base = host_base or rec.get("host_base") or "the agent data folder"
-        images = rec.get("images") or ["hasat-agent:local"]
-        remove += ["the hasat-agent container", "image(s): " + ", ".join(images)]
+        images = rec.get("images") or []
+        remove.append("the hasat-agent container")
+        if images:
+            remove.append("image(s) downloaded by the installer: " + ", ".join(images))
         if safe_base(base):
-            remove.append(f"folder {base} (code, certificates, settings)")
+            remove.append(f"folder {base} (code, Python libraries, certificates, settings)")
         else:
             keep.append(f"agent data folder {base} (not a dedicated folder; delete it by hand)")
         if "python:3.12-slim" not in images:
@@ -178,14 +181,15 @@ def host_script(remove_docker: bool) -> str:
 def container_script(container_name: str, host_base: Optional[str]) -> str:
     rec = load_record()
     base = host_base or rec.get("host_base")
-    images = rec.get("images") or ["hasat-agent:local"]
+    images = rec.get("images") or []
     lines = [
         "set +e",
         'export PATH="$PATH:/usr/local/bin:/usr/local/sbin:/usr/syno/bin:/usr/syno/sbin"',
         "sleep 2",
         f"docker rm -f {shlex.quote(container_name)} >/dev/null 2>&1",
-        f"docker rmi {_q(images)} >/dev/null 2>&1",
     ]
+    if images:
+        lines.append(f"docker rmi {_q(images)} >/dev/null 2>&1")
     if safe_base(base):
         lines.append(f"rm -rf {shlex.quote(base)}")
     return "\n".join(lines) + "\n"

@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck -x ha_satellite/rootfs/opt/hasat/agent/install.sh ha_satellite/rootfs/opt/hasat/agent/container/run.sh .github/scripts/docker-mirror.sh
+      - run: shellcheck -x ha_satellite/rootfs/opt/hasat/agent/install.sh ha_satellite/rootfs/opt/hasat/agent/container/run.sh ha_satellite/rootfs/opt/hasat/agent/container/start.sh .github/scripts/docker-mirror.sh
 
   python:
     name: Python tests

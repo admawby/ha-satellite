@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start (or restart) the HA Satellite agent container.
 #
-#   run.sh <base-dir> <data-volume> [image]
+#   run.sh <base-dir> <data-volume> [python-image]
 #
 # <base-dir>     holds hasat-agent/ (code), etc/ (certificates, config) and state/
 # <data-volume>  volume whose usage is reported as "disk" (e.g. /volume1), mounted read-only
@@ -13,7 +13,7 @@ set -eu
 
 BASE="$1"
 VOL="$2"
-IMAGE="${3:-hasat-agent:local}"
+IMAGE="${3:-python:3.12-slim}"
 NAME="${HASAT_CONTAINER_NAME:-hasat-agent}"
 
 set --
@@ -39,4 +39,5 @@ docker run -d --name "$NAME" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$VOL:/host/volume:ro" \
   "$@" \
-  "$IMAGE"
+  "$IMAGE" \
+  sh /opt/hasat/hasat-agent/container/start.sh

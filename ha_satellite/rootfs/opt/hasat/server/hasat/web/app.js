@@ -916,7 +916,6 @@ sudo nft delete table inet hasat 2>/dev/null
 [ -f /etc/ser2net.yaml.hasat-orig ] && sudo mv /etc/ser2net.yaml.hasat-orig /etc/ser2net.yaml
 sudo rm -rf /opt/hasat-agent* /etc/hasat-agent /var/lib/hasat-agent /media/hasat`,
   container: `sudo docker rm -f hasat-agent
-sudo docker rmi hasat-agent:local
 sudo rm -rf /volume1/docker/hasat-agent`,
 };
 

@@ -74,25 +74,25 @@ async def run(check: Callable[[bool, str], None], http: aiohttp.ClientSession, u
     os.environ.update(HASAT_MODE="container", HASAT_CONTAINER_NAME="hasat-agent", HASAT_HOST_BASE="/volume1/docker/hasat-agent")
     try:
         record.write_text(json.dumps({"mode": "container", "host_base": "/volume1/docker/hasat-agent",
-                                      "images": ["hasat-agent:local", "python:3.12-slim"]}))
+                                      "images": ["python:3.12-slim"]}))
         async with http.get(f"{proxy}/agent/uninstall-plan") as r:
             plan = await r.json()
         check(plan["mode"] == "container" and any("/volume1/docker/hasat-agent" in x for x in plan["remove"])
               and any("Container Manager" in x for x in plan["keep"]), "removal (NAS): plan shown")
         report = await mgr.client.request(sat, "POST", "/api/agent/uninstall", json={})
         script = captured.pop()
-        check("docker rm -f hasat-agent" in script and "hasat-agent:local" in script and "python:3.12-slim" in script
+        check("docker rm -f hasat-agent" in script and "docker rmi python:3.12-slim" in script
               and "rm -rf /volume1/docker/hasat-agent" in script, "removal (NAS): container, images and data folder removed")
         check("apt" not in script and "systemctl" not in script, "removal (NAS): DSM itself untouched")
         check(_sh_syntax_ok(script), "removal (NAS): cleanup script is valid shell")
 
         os.environ["HASAT_HOST_BASE"] = "/volume1"
-        record.write_text(json.dumps({"mode": "container", "images": ["hasat-agent:local"]}))
+        record.write_text(json.dumps({"mode": "container", "images": []}))
         await mgr.client.request(sat, "POST", "/api/agent/uninstall", json={})
         script = captured.pop()
         async with http.get(f"{proxy}/agent/uninstall-plan") as r:
             plan = await r.json()
-        check("rm -rf" not in script and "python:3.12-slim" not in script and any("delete it by hand" in x for x in plan["keep"]),
+        check("rm -rf" not in script and "docker rmi" not in script and any("delete it by hand" in x for x in plan["keep"]),
               "removal (NAS): never deletes a whole volume, keeps base image it did not download")
     finally:
         for k, v in saved.items():
