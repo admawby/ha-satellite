@@ -20,13 +20,52 @@ instance. From the **Satellites** panel in the sidebar you can:
 
 | Satellite | |
 | --- | --- |
-| Hardware | Any Raspberry Pi (3, 4, 5, Zero 2 W) or other Debian-based Linux box |
+| Hardware | Any Raspberry Pi (3, 4, 5, Zero 2 W) or other Debian-based Linux box; Synology NAS in [container mode](#synology-nas-container-mode) |
 | OS | Raspberry Pi OS / Debian 11+ / Ubuntu 22.04+ with systemd |
 | Network | Same LAN as Home Assistant; a **fixed IP** (DHCP reservation) is strongly recommended |
 | Access | SSH with a sudo-capable user (for one-click adoption), or a console to paste one command |
 
 The Pi needs internet access during installation (it installs `python3-aiohttp`,
 `python3-psutil`, `ser2net` and `nftables` with `apt`).
+
+## Synology NAS (container mode)
+
+Synology DSM cannot be modified like Raspberry Pi OS (no `apt`, DSM updates replace
+system files, and DSM 7 has no USB-serial drivers for Z-Wave/Zigbee sticks). The
+installer detects DSM and instead runs the agent as a Docker container called
+`hasat-agent` in **Container Manager**. On a NAS only these features are enabled:
+
+- **Health stats**: CPU temperature, CPU/memory usage, load, uptime and usage of
+  the first storage volume (`/volume1`), as sensors in Home Assistant
+- **Terminal**: the web terminal and command runner open a shell **on the NAS
+  itself** (not inside the container)
+- **Docker management**: the Docker tab for all containers in Container Manager,
+  including scheduled image updates
+
+Package updates, reboot/shutdown, USB radios, storage/file browser, system logs and
+the firewall rule are switched off. The agent refuses those requests itself, the tabs
+are hidden, and the matching Home Assistant entities are not created. Use Home
+Assistant's built-in **Synology DSM** integration for NAS-specific data such as disk
+health and DSM updates.
+
+**Requirements:** DSM 7 with **Container Manager** installed (Package Center), and
+SSH enabled (*Control Panel → Terminal & SNMP*) for one-click adoption with an
+administrator account. Otherwise run the install command from an SSH session with
+`sudo`.
+
+**How it runs:**
+- Agent code, certificates and settings are kept in `/volume1/docker/hasat-agent`,
+  so DSM updates do not remove them.
+- The container uses host networking, the host PID/UTS namespaces, `--privileged`
+  and the Docker socket. This lets it report the NAS's own stats, open the terminal
+  on the NAS and manage its containers. Treat it like root access to the NAS.
+- It is labelled `hasat.update=false`, so the Docker tab never recreates or stops
+  the agent itself.
+- If DSM's firewall is enabled, allow TCP `8765` from your Home Assistant host.
+
+To remove it, use **Settings → Remove satellite… → Also uninstall the agent**, or
+delete the `hasat-agent` container in Container Manager and the
+`/volume1/docker/hasat-agent` folder.
 
 ## Installation
 

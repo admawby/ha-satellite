@@ -22,6 +22,9 @@ Assistant instance — one add-on, installed from this repository.
 - **Secure, LAN-only** — private CA, mutual TLS, one-time pinned enrollment and an
   nftables rule that only lets your HA host in
 
+Synology NAS units are supported in a reduced **container mode** (health stats,
+terminal and Docker management only); see the docs.
+
 ## Installation
 
 1. **Settings → Add-ons → Add-on store → ⋮ → Repositories**, add

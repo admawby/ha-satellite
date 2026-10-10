@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import platform
 import shutil
 import socket
@@ -75,11 +76,33 @@ def throttled() -> Optional[Dict[str, Any]]:
     return result
 
 
+def _dsm_version() -> Optional[str]:
+    raw = _read(os.environ.get("HASAT_HOST_VERSION", "/etc.defaults/VERSION"))
+    if not raw or "productversion" not in raw:
+        return None
+    kv = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
+    kv = {k.strip(): v.strip().strip('"') for k, v in kv.items()}
+    text = f"DSM {kv.get('productversion', '?')}-{kv.get('buildnumber', '?')}"
+    if kv.get("smallfixnumber", "0") not in ("", "0"):
+        text += f" Update {kv['smallfixnumber']}"
+    return text
+
+
 def _os_name() -> str:
+    dsm = _dsm_version()
+    if dsm:
+        return dsm
+    if os.environ.get("HASAT_MODE") == "container":
+        return f"Linux {platform.release()} (container agent)"
     for line in (_read("/etc/os-release") or "").splitlines():
         if line.startswith("PRETTY_NAME="):
             return line.split("=", 1)[1].strip('"')
     return platform.system()
+
+
+def _synology_model() -> Optional[str]:
+    model = _read("/proc/sys/kernel/syno_hw_version")
+    return f"Synology {model}" if model else None
 
 
 def addresses() -> Dict[str, list]:
@@ -95,11 +118,11 @@ def addresses() -> Dict[str, list]:
 
 def collect() -> Dict[str, Any]:
     mem = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
+    disk = psutil.disk_usage(os.environ.get("HASAT_DISK_PATH", "/"))
     boot = psutil.boot_time()
     return {
         "hostname": socket.gethostname(),
-        "model": _read("/proc/device-tree/model") or platform.machine(),
+        "model": _read("/proc/device-tree/model") or _synology_model() or platform.machine(),
         "os": _os_name(),
         "kernel": platform.release(),
         "arch": platform.machine(),

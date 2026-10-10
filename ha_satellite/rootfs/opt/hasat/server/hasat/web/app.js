@@ -79,7 +79,7 @@ function satCard(s) {
   return `
   <div class="card sat-card" data-id="${esc(s.id)}">
     <div class="sat-head"><span class="dot ${s.online ? "on" : ""}"></span><h3>${esc(s.name)}</h3><span class="muted mono">${esc(s.host)}</span></div>
-    <div class="muted">${esc(m.model || s.hostname || "")}</div>
+    <div class="muted">${esc(m.model || s.hostname || "")}${m.mode === "container" ? " · container agent" : ""}</div>
     <div class="stats">
       <div class="stat"><div class="v ${level(m.cpu_temp, 65, 80)}">${fmtTemp(m.cpu_temp)}</div><div class="l">CPU temp</div></div>
       <div class="stat"><div class="v">${fmtPct(m.cpu_percent)}</div><div class="l">CPU</div></div>
@@ -189,8 +189,18 @@ async function startAdopt() {
 // ------------------------------------------------------------------ detail
 const TABS = [["overview", "Overview"], ["radios", "USB and Storage"], ["terminal", "Terminal"], ["updates", "Updates"], ["docker", "Docker"], ["logs", "Logs"], ["settings", "Settings"]];
 
+const ALL_FEATURES = ["health", "terminal", "docker", "docker_install", "radios", "files", "updates", "logs", "power", "services", "firewall"];
+const TAB_FEATURE = { radios: "radios", terminal: "terminal", updates: "updates", docker: "docker", logs: "logs" };
+// Older agents do not report features and support everything.
+const satFeatures = (s) => ((s && s.metrics && s.metrics.features) || ALL_FEATURES);
+const has = (s, f) => satFeatures(s).includes(f);
+const containerMode = (s) => !!(s && s.metrics && s.metrics.mode === "container");
+const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+
 function renderDetail() {
   const s = currentSat();
+  const tabs = TABS.filter(([k]) => !TAB_FEATURE[k] || has(s, TAB_FEATURE[k]));
+  if (!tabs.some(([k]) => k === state.tab)) state.tab = "overview";
   view.innerHTML = `
     <div class="detail-head">
       <button class="btn small" id="back">← All</button>
@@ -199,7 +209,7 @@ function renderDetail() {
       <span class="spacer"></span>
       <span class="muted">${s.online ? "online" : "offline · last seen " + fmtAgo(s.last_seen)}</span>
     </div>
-    <nav class="tabs">${TABS.map(([k, l]) => `<button class="tab ${k === state.tab ? "active" : ""}" data-t="${k}">${l}</button>`).join("")}</nav>
+    <nav class="tabs">${tabs.map(([k, l]) => `<button class="tab ${k === state.tab ? "active" : ""}" data-t="${k}">${l}</button>`).join("")}</nav>
     <section id="tab"></section>`;
   $("#back").onclick = () => go();
   view.querySelectorAll("nav .tab").forEach((t) => (t.onclick = () => go(state.current, t.dataset.t)));
@@ -229,9 +239,9 @@ function tabOverview(el, s) {
           </div>
           <div class="section" style="margin-top:14px">
             <div class="row"><span>Memory</span><span class="spacer"></span><span class="muted">${fmtBytes(m.mem_used)} / ${fmtBytes(m.mem_total)}</span></div>${bar(m.mem_percent, 80, 92)}
-            <div class="row" style="margin-top:8px"><span>Disk /</span><span class="spacer"></span><span class="muted">${fmtBytes(m.disk_used)} / ${fmtBytes(m.disk_total)}</span></div>${bar(m.disk_percent, 80, 92)}
+            <div class="row" style="margin-top:8px"><span>Disk ${containerMode(sat) ? "(data volume)" : "/"}</span><span class="spacer"></span><span class="muted">${fmtBytes(m.disk_used)} / ${fmtBytes(m.disk_total)}</span></div>${bar(m.disk_percent, 80, 92)}
           </div>
-          <div class="section">
+          ${has(sat, "power") ? `<div class="section">
             <h4 style="margin-top:14px">Power &amp; throttling</h4>
             ${thr ? `<div class="chips">
               <span class="chip ${thr.under_voltage_now ? "bad" : "ok"}">under-voltage ${thr.under_voltage_now ? "NOW" : "no"}</span>
@@ -240,7 +250,7 @@ function tabOverview(el, s) {
               ${thr.under_voltage_occurred ? '<span class="chip warn">under-voltage since boot</span>' : ""}
               ${thr.throttled_occurred ? '<span class="chip warn">throttled since boot</span>' : ""}
               <span class="chip mono">${esc(thr.raw)}</span></div>` : '<span class="muted">Not a Raspberry Pi firmware (no throttle data).</span>'}
-          </div>
+          </div>` : ""}
         </div>
         <div class="card">
           <h4>System</h4>
@@ -251,19 +261,20 @@ function tabOverview(el, s) {
             <dt>Hostname</dt><dd>${esc(m.hostname || sat.hostname)}</dd>
             <dt>Addresses</dt><dd class="mono">${addrs || "–"}</dd>
             <dt>Agent</dt><dd>${esc(m.agent_version || "–")}${state.controller && m.agent_version && m.agent_version !== state.controller.agent_version ? ` <span class="warn">(add-on ships ${esc(state.controller.agent_version)})</span>` : ""}</dd>
-            <dt>Package updates</dt><dd>${upd.available ?? "–"} available · checked ${fmtAgo(upd.last_check)}${upd.reboot_required ? ' · <span class="warn">reboot required</span>' : ""}</dd>
+            ${containerMode(sat) ? `<dt>Agent mode</dt><dd>Container (health, terminal and Docker only)</dd>` : ""}
+            ${has(sat, "updates") ? `<dt>Package updates</dt><dd>${upd.available ?? "–"} available · checked ${fmtAgo(upd.last_check)}${upd.reboot_required ? ' · <span class="warn">reboot required</span>' : ""}</dd>` : ""}
             <dt>Docker</dt><dd>${(m.docker || {}).available ? `${m.docker.running}/${m.docker.total} containers running · ${m.docker.updates_available} image update(s) · checked ${fmtAgo(m.docker.last_check)}` : "not installed"}</dd>
-            <dt>Radio bridges</dt><dd>${(m.serial || []).map((b) => `${esc(b.name || b.device)} → :${b.port} ${b.listening ? '<span class="ok">●</span>' : '<span class="bad">●</span>'}`).join("<br>") || "none"}</dd>
+            ${has(sat, "radios") ? `<dt>Radio bridges</dt><dd>${(m.serial || []).map((b) => `${esc(b.name || b.device)} → :${b.port} ${b.listening ? '<span class="ok">●</span>' : '<span class="bad">●</span>'}`).join("<br>") || "none"}</dd>` : ""}
           </dl>
           ${Object.keys(m.errors || {}).length ? `<p class="bad">${Object.entries(m.errors).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join("<br>")}</p>` : ""}
           <div class="row" style="margin-top:12px">
-            <button class="btn" id="o-term">Open terminal</button>
-            <button class="btn" id="o-reboot">Reboot</button>
+            ${has(sat, "terminal") ? '<button class="btn" id="o-term">Open terminal</button>' : ""}
+            ${has(sat, "power") ? '<button class="btn" id="o-reboot">Reboot</button>' : ""}
           </div>
         </div>
       </div>`;
-    $("#o-term").onclick = () => go(state.current, "terminal");
-    $("#o-reboot").onclick = () => reboot();
+    on("#o-term", () => go(state.current, "terminal"));
+    on("#o-reboot", () => reboot());
   };
   draw();
   every(10000, async () => { await refresh().catch(() => {}); if (state.tab === "overview" && currentSat()) draw(); });
@@ -549,7 +560,7 @@ async function renderRadios(el, s) {
 function tabTerminal(el, s) {
   el.innerHTML = `
     <div class="card section">
-      <div class="cli"><input type="text" id="cli" placeholder="Run a one-off command, e.g.  vcgencmd measure_temp" spellcheck="false"><button class="btn" id="cli-run">Run</button></div>
+      <div class="cli"><input type="text" id="cli" placeholder="Run a one-off command, e.g.  uptime" spellcheck="false"><button class="btn" id="cli-run">Run</button></div>
       <pre class="out" id="cli-out" hidden></pre>
     </div>
     <div class="card section">
@@ -866,7 +877,8 @@ async function tabSettings(el, s) {
       <div class="card">
         <h4>Security</h4>
         ${settings ? `
-        <label class="check"><input type="checkbox" id="e-fw" ${settings.firewall_enabled ? "checked" : ""}> Firewall: only ${esc((c.trusted_ips || []).join(", ") || "the HA host")} may reach agent and radio ports</label>
+        ${has(s, "firewall") ? `<label class="check"><input type="checkbox" id="e-fw" ${settings.firewall_enabled ? "checked" : ""}> Firewall: only ${esc((c.trusted_ips || []).join(", ") || "the HA host")} may reach agent and radio ports</label>`
+          : `<p class="muted">Container mode: the agent does not change the host firewall. If DSM's firewall is on, allow TCP ${esc(s.port)} from Home Assistant.</p>`}
         <label class="field"><span>Terminal runs as user</span><input type="text" id="e-user" value="${esc(settings.terminal_user)}"></label>
         <div class="row"><span class="spacer"></span><button class="btn" id="e-sec">Save security settings</button></div>` : '<p class="muted">Available when the satellite is online.</p>'}
         <p class="muted" style="margin-top:10px">Agent API: mutual TLS on port ${esc(s.port)}. CA fingerprint:<br><code>${esc(c.ca_fingerprint)}</code></p>
@@ -876,9 +888,9 @@ async function tabSettings(el, s) {
       <h4>Maintenance</h4>
       <div class="row">
         <button class="btn" id="e-agent" ${s.online ? "" : "disabled"}>Reinstall agent ${esc(c.agent_version)}</button>
-        <button class="btn" id="e-restart-ser" ${s.online ? "" : "disabled"}>Restart ser2net</button>
-        <button class="btn" id="e-reboot" ${s.online ? "" : "disabled"}>Reboot</button>
-        <button class="btn danger" id="e-off" ${s.online ? "" : "disabled"}>Shut down</button>
+        ${has(s, "radios") ? `<button class="btn" id="e-restart-ser" ${s.online ? "" : "disabled"}>Restart ser2net</button>` : ""}
+        ${has(s, "power") ? `<button class="btn" id="e-reboot" ${s.online ? "" : "disabled"}>Reboot</button>
+        <button class="btn danger" id="e-off" ${s.online ? "" : "disabled"}>Shut down</button>` : ""}
         <span class="spacer"></span>
         <button class="btn danger" id="e-remove">Remove satellite…</button>
       </div>
@@ -887,16 +899,16 @@ async function tabSettings(el, s) {
     try { await api(`api/sat/${s.id}`, { method: "PATCH", body: { name: $("#e-name").value, host: $("#e-host").value } }); toast("Saved"); render(); } catch (e) { toast(e.message); }
   };
   if (settings) $("#e-sec").onclick = async () => {
-    try { await satApi("settings", { method: "PUT", body: { firewall_enabled: $("#e-fw").checked, terminal_user: $("#e-user").value.trim() } }); toast("Security settings applied"); } catch (e) { toast(e.message); }
+    try { await satApi("settings", { method: "PUT", body: { ...($("#e-fw") ? { firewall_enabled: $("#e-fw").checked } : {}), terminal_user: $("#e-user").value.trim() } }); toast("Security settings applied"); } catch (e) { toast(e.message); }
   };
   $("#e-agent").onclick = async () => { try { await api(`api/sat/${s.id}/agent-update`, { method: "POST" }); toast("Agent updated, restarting…"); } catch (e) { toast(e.message); } };
-  $("#e-restart-ser").onclick = async () => { try { await satApi("services/ser2net/restart", { method: "POST" }); toast("ser2net restarted"); } catch (e) { toast(e.message); } };
-  $("#e-reboot").onclick = reboot;
-  $("#e-off").onclick = async () => { if (!confirm(`Shut down ${s.name}? You will need physical access to power it back on.`)) return; try { await satApi("system/shutdown", { method: "POST" }); toast("Shutting down…"); } catch (e) { toast(e.message); } };
+  on("#e-restart-ser", async () => { try { await satApi("services/ser2net/restart", { method: "POST" }); toast("ser2net restarted"); } catch (e) { toast(e.message); } });
+  on("#e-reboot", reboot);
+  on("#e-off", async () => { if (!confirm(`Shut down ${s.name}? You will need physical access to power it back on.`)) return; try { await satApi("system/shutdown", { method: "POST" }); toast("Shutting down…"); } catch (e) { toast(e.message); } });
   $("#e-remove").onclick = () => {
     modalBody.innerHTML = `<h3>Remove ${esc(s.name)}?</h3>
       <p>This removes the satellite and its Home Assistant entities.</p>
-      <label class="check"><input type="checkbox" id="rm-un" ${s.online ? "checked" : "disabled"}> Also uninstall the agent from the Pi (restores ser2net config and removes firewall rules)</label>
+      <label class="check"><input type="checkbox" id="rm-un" ${s.online ? "checked" : "disabled"}> ${containerMode(s) ? "Also uninstall the agent (removes the hasat-agent container and its data)" : "Also uninstall the agent from the Pi (restores ser2net config and removes firewall rules)"}</label>
       <div class="modal-actions"><button type="button" class="btn" id="rm-no">Cancel</button><button type="button" class="btn danger" id="rm-yes">Remove</button></div>`;
     $("#rm-no").onclick = () => modal.close();
     $("#rm-yes").onclick = async () => {

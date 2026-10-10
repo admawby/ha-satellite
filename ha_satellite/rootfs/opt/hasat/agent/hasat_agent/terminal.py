@@ -24,6 +24,22 @@ from aiohttp import WSMsgType, web
 _LOGGER = logging.getLogger(__name__)
 
 
+def _spawn_host(user: str):
+    """Container mode: open a login shell on the host via nsenter (needs --pid host + --privileged)."""
+    pid, fd = pty.fork()
+    if pid == 0:  # child
+        env = {"TERM": "xterm-256color", "LANG": "C.UTF-8", "HOME": "/root", "USER": "root",
+               "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/syno/sbin:/usr/syno/bin"}
+        ns = ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--"]
+        if user == "root":
+            argv = ns + ["/bin/sh", "-c", 'cd /root 2>/dev/null || cd /; exec "$(command -v bash || echo /bin/sh)" -l']
+        else:
+            argv = ns + ["su", "-", user]
+        os.execvpe("nsenter", argv, env)
+        os._exit(1)
+    return pid, fd
+
+
 def _spawn(user: str):
     try:
         pw = pwd.getpwnam(user)
@@ -75,11 +91,11 @@ async def _reap(pid: int) -> None:
             await asyncio.sleep(0.1)
 
 
-async def handle(request: web.Request, user: str) -> web.WebSocketResponse:
+async def handle(request: web.Request, user: str, host_namespaces: bool = False) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
     loop = asyncio.get_running_loop()
-    pid, fd = _spawn(user)
+    pid, fd = _spawn_host(user) if host_namespaces else _spawn(user)
     os.set_blocking(fd, False)
     _LOGGER.info("Terminal opened (user=%s, pid=%s)", user, pid)
     out_q: asyncio.Queue = asyncio.Queue()

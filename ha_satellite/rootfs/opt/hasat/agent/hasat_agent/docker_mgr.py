@@ -33,6 +33,7 @@ from urllib.parse import quote
 
 import aiohttp
 
+from .mode import own_container
 from .schedule import due_window
 from .settings import CONTAINER_RE, STATE
 
@@ -385,6 +386,7 @@ class DockerManager:
         self._check_name(name)
         if action not in ("start", "stop", "restart"):
             raise ValueError("unsupported action")
+        self._check_not_self(name)
         try:
             await self.api.request("POST", f"/containers/{name}/{action}", timeout=120)
         except DockerError as err:
@@ -395,6 +397,11 @@ class DockerManager:
     def _check_name(name: str) -> None:
         if not CONTAINER_RE.match(name):
             raise ValueError("invalid container name")
+
+    @staticmethod
+    def _check_not_self(name: str) -> None:
+        if name and name == own_container():
+            raise ValueError("this is the HA Satellite agent's own container; manage it from Container Manager")
 
     # --------------------------------------------------------------- check
     async def _remote_digest(self, ref: str) -> str:
@@ -507,6 +514,7 @@ class DockerManager:
 
     async def _update_container(self, name: str, prune: bool) -> bool:
         self._check_name(name)
+        self._check_not_self(name)
         info = await self.api.request("GET", f"/containers/{name}/json")
         ref = info["Config"]["Image"]
         parts = split_ref(ref)

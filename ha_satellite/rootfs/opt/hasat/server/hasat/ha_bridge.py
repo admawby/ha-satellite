@@ -37,6 +37,7 @@ class Entity:
     icon: str | None = None
     category: str | None = None
     precision: int | None = None
+    feature: str = "health"  # entity only exists if the satellite offers this feature
 
 
 SENSORS: list[Entity] = [
@@ -46,21 +47,29 @@ SENSORS: list[Entity] = [
     Entity("disk_percent", "Disk usage", unit="%", state_class="measurement", icon="mdi:harddisk", precision=0),
     Entity("load_1", "Load (1m)", state_class="measurement", icon="mdi:gauge", precision=2),
     Entity("boot_time", "Last boot", device_class="timestamp", category="diagnostic"),
-    Entity("updates_available", "Package updates", icon="mdi:package-up", state_class="measurement"),
-    Entity("docker_updates", "Container updates", icon="mdi:docker", state_class="measurement"),
-    Entity("containers_running", "Containers running", icon="mdi:docker", state_class="measurement"),
+    Entity("updates_available", "Package updates", icon="mdi:package-up", state_class="measurement", feature="updates"),
+    Entity("docker_updates", "Container updates", icon="mdi:docker", state_class="measurement", feature="docker"),
+    Entity("containers_running", "Containers running", icon="mdi:docker", state_class="measurement", feature="docker"),
     Entity("agent_version", "Agent version", icon="mdi:tag", category="diagnostic"),
     Entity("ip_address", "IP address", icon="mdi:ip-network", category="diagnostic"),
-    Entity("throttled", "Throttled", component="binary_sensor", device_class="problem"),
-    Entity("under_voltage", "Under-voltage", component="binary_sensor", device_class="problem"),
-    Entity("reboot_required", "Reboot required", component="binary_sensor", device_class="update", category="diagnostic"),
-    Entity("reboot", "Reboot", component="button", device_class="restart", category="config"),
-    Entity("check_updates", "Check for updates", component="button", icon="mdi:package-down", category="config"),
-    Entity("apply_updates", "Install updates", component="button", icon="mdi:package-up", category="config"),
-    Entity("update_containers", "Update containers", component="button", icon="mdi:docker", category="config"),
+    Entity("throttled", "Throttled", component="binary_sensor", device_class="problem", feature="power"),
+    Entity("under_voltage", "Under-voltage", component="binary_sensor", device_class="problem", feature="power"),
+    Entity("reboot_required", "Reboot required", component="binary_sensor", device_class="update", category="diagnostic", feature="updates"),
+    Entity("reboot", "Reboot", component="button", device_class="restart", category="config", feature="power"),
+    Entity("check_updates", "Check for updates", component="button", icon="mdi:package-down", category="config", feature="updates"),
+    Entity("apply_updates", "Install updates", component="button", icon="mdi:package-up", category="config", feature="updates"),
+    Entity("update_containers", "Update containers", component="button", icon="mdi:docker", category="config", feature="docker"),
 ]
 
 BUTTON_ACTIONS = {e.key for e in SENSORS if e.component == "button"}
+ALL_FEATURES = {"health", "terminal", "docker", "docker_install", "radios", "files",
+                "updates", "logs", "power", "services", "firewall"}
+
+
+def sat_features(sat: Satellite) -> set:
+    """Features reported by the agent; older agents report none and have everything."""
+    feats = (sat.metrics or {}).get("features")
+    return set(feats) if feats else set(ALL_FEATURES)
 
 
 def flatten(sat: Satellite) -> dict[str, Any]:
@@ -94,7 +103,7 @@ class HABridge:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt: mqtt_t.Client | None = None
         self._mqtt_connected = False
-        self._announced: set[str] = set()
+        self._announced: dict[str, tuple] = {}
         self._http: aiohttp.ClientSession | None = None
 
     # ------------------------------------------------------------- lifecycle
@@ -195,9 +204,16 @@ class HABridge:
             return
         avail_topic = f"{BASE}/{sat.id}/availability"
         state_topic = f"{BASE}/{sat.id}/state"
-        if sat.id not in self._announced:
+        feats = sat_features(sat)
+        key = tuple(sorted(feats))
+        # Announce once we know the satellite's features, and again if they change.
+        if sat.metrics and self._announced.get(sat.id) != key:
             device = self._device(sat)
             for ent in SENSORS:
+                topic = f"{DISCOVERY_PREFIX}/{ent.component}/hasat_{sat.id}/{ent.key}/config"
+                if ent.feature not in feats:
+                    self._mqtt.publish(topic, "", retain=True)  # drop entities this satellite cannot have
+                    continue
                 uid = f"hasat_{sat.id}_{ent.key}"
                 cfg: dict[str, Any] = {
                     "name": ent.name,
@@ -223,9 +239,8 @@ class HABridge:
                                   ("suggested_display_precision", ent.precision)):
                     if val is not None:
                         cfg[attr] = val
-                self._mqtt.publish(f"{DISCOVERY_PREFIX}/{ent.component}/hasat_{sat.id}/{ent.key}/config",
-                                   json.dumps(cfg), retain=True)
-            self._announced.add(sat.id)
+                self._mqtt.publish(topic, json.dumps(cfg), retain=True)
+            self._announced[sat.id] = key
         self._mqtt.publish(avail_topic, "online" if sat.online else "offline", retain=True)
         if sat.online:
             self._mqtt.publish(state_topic, json.dumps(flatten(sat)), retain=True)
@@ -234,8 +249,9 @@ class HABridge:
         if not self._http or not SUPERVISOR_TOKEN:
             return
         values = flatten(sat)
+        feats = sat_features(sat)
         for ent in SENSORS:
-            if ent.component == "button":
+            if ent.component == "button" or ent.feature not in feats:
                 continue
             domain = "binary_sensor" if ent.component == "binary_sensor" else "sensor"
             entity_id = f"{domain}.hasat_{sat.slug}_{ent.key}"
@@ -266,4 +282,4 @@ class HABridge:
                 self._mqtt.publish(f"{DISCOVERY_PREFIX}/{ent.component}/hasat_{sat.id}/{ent.key}/config", "", retain=True)
             for suffix in ("state", "availability"):
                 self._mqtt.publish(f"{BASE}/{sat.id}/{suffix}", "", retain=True)
-        self._announced.discard(sat.id)
+        self._announced.pop(sat.id, None)

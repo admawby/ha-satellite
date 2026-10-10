@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- **Synology NAS support (container mode)**: the installer detects DSM and runs the agent
+  as the `hasat-agent` container in Container Manager (data in `/volume1/docker/hasat-agent`)
+  - only health stats, terminal and Docker management are enabled; the agent refuses all
+    other endpoints, the UI hides their tabs/buttons and HA only gets matching entities
+  - terminal and command runner open a shell on the NAS itself (nsenter), not in the container
+  - reports the NAS model, DSM version and data-volume usage
+  - the agent never stops, updates or recreates its own container
+- Other Linux systems without `apt` but with Docker also install in container mode
+- Agents now report their mode and features; older agents keep every feature
+
 ## 0.3.0
 
 - **USB radios** tab renamed **USB and Storage**; it still shows radios and bridges, and adds:

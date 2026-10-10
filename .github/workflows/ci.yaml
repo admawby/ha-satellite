@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck -x ha_satellite/rootfs/opt/hasat/agent/install.sh
+      - run: shellcheck -x ha_satellite/rootfs/opt/hasat/agent/install.sh ha_satellite/rootfs/opt/hasat/agent/container/run.sh .github/scripts/docker-mirror.sh
 
   python:
     name: Python tests
@@ -44,8 +44,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install aiohttp psutil
+      - run: pip install aiohttp psutil cryptography
       - run: python tests/test_docker_real.py
+      - name: Pretend to be Synology DSM (for the container-mode test)
+        run: |
+          sudo mkdir -p /etc.defaults
+          printf 'productversion="7.2.1"
+buildnumber="69057"
+smallfixnumber="5"
+' | sudo tee /etc.defaults/VERSION
+      - run: python tests/test_container_agent.py
 
   build:
     name: Build ${{ matrix.arch }}

@@ -69,6 +69,7 @@ from hasat_agent import server as agent_server  # noqa: E402
 
 import docker_cases  # noqa: E402
 import files_cases  # noqa: E402
+import mode_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -277,10 +278,15 @@ async def main() -> None:
     async with aiohttp.ClientSession() as http:
         await docker_cases.run(check, http, ui, sat.id, agent, fake)
         await files_cases.run_docker_install(check, http, ui, sat.id, agent)
+
     await mgr.poll_one(sat.id)
     d = sat.metrics["docker"]
     check(d["available"] and d["total"] == 5 and d["updates_available"] == 2, "docker summary in satellite status (opted-out images still reported)")
     check(ha_bridge.flatten(sat)["docker_updates"] == 2, "container-update count exposed to HA")
+
+    print("container mode (Synology)")
+    async with aiohttp.ClientSession() as http:
+        await mode_cases.run(check, http, ui, mgr, sat, fake, TMP)
     await docker_runner.cleanup()
     await mgr.poll_one(sat.id)
     check(sat.online and sat.metrics["docker"]["available"] is False, "satellite stays healthy when Docker is down")

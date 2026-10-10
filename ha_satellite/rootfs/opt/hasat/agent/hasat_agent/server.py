@@ -15,7 +15,7 @@ from typing import Any, Dict
 
 from aiohttp import web
 
-from . import __version__, files, firewall, metrics, serial_bridge, storage, terminal, usb
+from . import __version__, files, firewall, metrics, mode, serial_bridge, storage, terminal, usb
 from .settings import (CA_FILE, CERT_FILE, INSTALL_DIR, KEY_FILE, SYSTEMD_DIR, load_config, load_settings,
                        merge_settings, save_settings)
 from .docker_mgr import DockerError, DockerManager
@@ -66,6 +66,8 @@ class Agent:
 
     def apply_network(self) -> None:
         """(Re)write ser2net and firewall state from settings."""
+        if mode.container_mode():
+            return  # appliance OS (e.g. Synology DSM): no ser2net / nftables changes
         bridges = self.settings.get("serial", [])
         err = serial_bridge.apply(bridges)
         self._set_error("serial", err)
@@ -81,13 +83,16 @@ class Agent:
 
     def status(self) -> Dict[str, Any]:
         data = metrics.collect()
+        feats = mode.features()
         data.update(
             agent_version=__version__,
             satellite_id=self.config.get("id"),
-            updates=dict(self.updater.status(), log=[]),  # full log via /api/updates
-            serial=serial_bridge.status(self.settings.get("serial", [])),
+            mode=mode.mode_name(),
+            features=feats,
+            updates=dict(self.updater.status(), log=[]) if "updates" in feats else {},  # full log via /api/updates
+            serial=serial_bridge.status(self.settings.get("serial", [])) if "radios" in feats else [],
             settings={k: v for k, v in self.settings.items() if k != "serial"},
-            radios=usb.serial_devices(),
+            radios=usb.serial_devices() if "radios" in feats else [],
             errors=self.errors,
         )
         return data
@@ -307,8 +312,9 @@ class Agent:
         if not command.strip():
             raise web.HTTPBadRequest(text="command required")
         _LOGGER.info("exec: %s", command)
+        shell = ["/bin/sh", "-lc", command] if mode.container_mode() else ["/bin/bash", "-lc", command]
         proc = await asyncio.create_subprocess_exec(
-            "/bin/bash", "-lc", command,
+            *mode.host_cmd(shell),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL, start_new_session=True,
         )
@@ -336,7 +342,7 @@ class Agent:
         return web.json_response({"output": out.decode(errors="replace")})
 
     async def h_terminal(self, request: web.Request) -> web.WebSocketResponse:
-        return await terminal.handle(request, self.settings.get("terminal_user", "root"))
+        return await terminal.handle(request, self.settings.get("terminal_user", "root"), mode.container_mode())
 
     async def h_agent_update(self, request: web.Request) -> web.Response:
         blob = await request.read()
@@ -372,6 +378,24 @@ class Agent:
 
     async def h_uninstall(self, _r: web.Request) -> web.Response:
         _LOGGER.warning("Uninstall requested by manager")
+        if mode.container_mode():
+            # Remove our data (certificates, settings, code), then the container itself.
+            base = INSTALL_DIR.parent
+            for sub in ("etc", "state", INSTALL_DIR.name, INSTALL_DIR.name + ".old"):
+                shutil.rmtree(base / sub, ignore_errors=True)
+            name = mode.own_container()
+
+            async def remove_self() -> None:
+                await asyncio.sleep(1)
+                try:
+                    await self.docker.api.request("DELETE", f"/containers/{name}", params={"force": "1"})
+                except DockerError as err:
+                    _LOGGER.error("Could not remove agent container: %s", err)
+                    os._exit(0)
+
+            if name:
+                asyncio.ensure_future(remove_self())
+            return web.json_response({"ok": True})
         serial_bridge.restore()
         firewall.remove()
         script = (
@@ -393,6 +417,10 @@ class Agent:
             if cn != controller_cn:
                 _LOGGER.warning("Rejected request from %s with certificate CN=%r", request.remote, cn)
                 raise web.HTTPForbidden()
+            feature = mode.feature_for(request.path)
+            if feature and feature not in mode.features():
+                return web.json_response(
+                    {"error": f"'{feature}' is not available on this satellite ({mode.mode_name()} mode)"}, status=403)
             try:
                 return await handler(request)
             except ValueError as err:
@@ -444,12 +472,15 @@ class Agent:
     async def run(self) -> None:
         metrics.prime()
         await asyncio.get_running_loop().run_in_executor(None, self.apply_network)
-        asyncio.ensure_future(self.updater.scheduler())
-        asyncio.ensure_future(self.docker.scheduler())
+        if "updates" in mode.features():
+            asyncio.ensure_future(self.updater.scheduler())
+        if "docker" in mode.features():
+            asyncio.ensure_future(self.docker.scheduler())
         runner = web.AppRunner(self.build_app(), access_log=None)
         await runner.setup()
         port = int(self.config["agent_port"])
         site = web.TCPSite(runner, None, port, ssl_context=_ssl_context())
         await site.start()
-        _LOGGER.info("HA Satellite agent %s listening on :%s (satellite %s)", __version__, port, self.config.get("id"))
+        _LOGGER.info("HA Satellite agent %s listening on :%s (satellite %s, %s mode)",
+                     __version__, port, self.config.get("id"), mode.mode_name())
         await asyncio.Event().wait()
