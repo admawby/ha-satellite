@@ -49,10 +49,7 @@ jobs:
       - name: Pretend to be Synology DSM (for the container-mode test)
         run: |
           sudo mkdir -p /etc.defaults
-          printf 'productversion="7.2.1"
-buildnumber="69057"
-smallfixnumber="5"
-' | sudo tee /etc.defaults/VERSION
+          printf 'productversion="7.2.1"\nbuildnumber="69057"\nsmallfixnumber="5"\n' | sudo tee /etc.defaults/VERSION
       - run: python tests/test_container_agent.py
 
   build:
