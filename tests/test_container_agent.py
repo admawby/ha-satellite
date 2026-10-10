@@ -38,6 +38,8 @@ from hasat.agent_client import AgentClient, AgentError, build_agent_bundle  # no
 from hasat.pki import PKI  # noqa: E402
 from hasat.store import Satellite  # noqa: E402
 
+import terminal_cases  # noqa: E402
+
 PORT = 18765
 NAME = "hasat-agent"
 SAT_ID = "sat-c0ffee01"
@@ -150,6 +152,8 @@ async def main() -> None:
     await asyncio.wait_for(read(), 20)
     await ws.close()
     check(f"TERM-OS={host_id}-42" in seen, "interactive terminal is a shell on the host")
+
+    await terminal_cases.run_with(check, terminal_cases.agent_connector(client, sat), "container terminal")
 
     d = await client.request(sat, "GET", "/api/docker")
     me = {c["name"]: c for c in d["containers"]}.get(NAME)

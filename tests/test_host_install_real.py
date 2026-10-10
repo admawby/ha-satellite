@@ -34,6 +34,8 @@ from hasat.config import load_options  # noqa: E402
 from hasat.enroll import build_enroll_app  # noqa: E402
 from hasat.manager import Manager  # noqa: E402
 
+import terminal_cases  # noqa: E402
+
 AGENT_PORT, ENROLL_PORT = 18766, 18767
 TRACE_PATHS = ["/opt/hasat-agent", "/opt/hasat-agent.old", "/etc/hasat-agent", "/var/lib/hasat-agent",
                "/etc/systemd/system/hasat-agent.service", "/media/hasat", "/etc/ser2net.yaml",
@@ -103,6 +105,8 @@ async def main() -> None:
     check(set(record["packages_added"]) == added and "ser2net" in added, f"install record lists the {len(added)} added packages")
     check("hasat" in run("sudo", "nft", "list", "tables"), "firewall table installed")
     check(os.path.exists("/etc/ser2net.yaml"), "ser2net config written")
+
+    await terminal_cases.run_with(check, terminal_cases.agent_connector(mgr.client, sat), "installed-agent terminal")
 
     plan = await mgr.client.request(sat, "GET", "/api/agent/uninstall-plan")
     check(any("ser2net" in x for x in plan["remove"]), "removal plan lists added packages")
