@@ -66,6 +66,7 @@ class BulkJob:
     runs: List[SatelliteRun]
     started: float = field(default_factory=time.time)
     finished: Optional[float] = None
+    dismissed: bool = False  # hidden from the progress panel (kept by the add-on, so reloads respect it)
 
     @property
     def running(self) -> bool:
@@ -73,7 +74,8 @@ class BulkJob:
 
     def to_api(self) -> Dict[str, Any]:
         return {"id": self.id, "scope": self.scope, "running": self.running, "started": self.started,
-                "finished": self.finished, "satellites": [r.to_api() for r in self.runs]}
+                "finished": self.finished, "dismissed": self.dismissed,
+                "satellites": [r.to_api() for r in self.runs]}
 
 
 def _features(sat: "Satellite") -> set:
@@ -91,6 +93,15 @@ class BulkUpdates:
 
     def latest(self) -> Optional[Dict[str, Any]]:
         return self.jobs[-1].to_api() if self.jobs else None
+
+    def dismiss(self, job_id: str) -> None:
+        for job in self.jobs:
+            if job.id == job_id:
+                if job.running:
+                    raise RuntimeError("the update is still running")
+                job.dismissed = True
+                return
+        raise ValueError("unknown job")
 
     def start(self, scope: str, sat_ids: Optional[List[str]] = None) -> BulkJob:
         if scope not in SCOPES:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+
+- **Dismiss** on the update progress panel now sticks: the add-on remembers it, so the panel
+  no longer reappears when Home Assistant reloads the page (e.g. switching panels or the
+  mobile app) or on another device
+
 ## 0.6.0
 
 - **Live polling**: while the page is visible and you are using it, satellites are polled every

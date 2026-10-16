@@ -132,6 +132,12 @@ async def run_bulk(check: Callable[[bool, str], None], http: aiohttp.ClientSessi
             await asyncio.sleep(0.2)
         check(len(job["satellites"]) == 1 and [s["kind"] for s in job["satellites"][0]["steps"]] == ["docker"]
               and not any(k == "apt" for k, _c, _t in order), "bulk: per-tile Docker update touches only that satellite's images")
+        async with http.post(f"{ui}/api/bulk-update/dismiss", json={"id": job["id"]}) as r:
+            check(r.status == 200, "bulk: finished progress panel can be dismissed")
+        async with http.get(f"{ui}/api/state") as r:
+            check((await r.json())["bulk"]["dismissed"] is True, "bulk: dismissal is remembered by the add-on (survives reloads)")
+        async with http.post(f"{ui}/api/bulk-update/dismiss", json={"id": "nope"}) as r:
+            check(r.status == 404, "bulk: dismissing an unknown job is rejected")
     finally:
         agent.updater._run, agent.updater._list_upgradable = real_run, real_list
         agent.docker.update = orig_update

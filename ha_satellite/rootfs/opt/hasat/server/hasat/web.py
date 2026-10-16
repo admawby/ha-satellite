@@ -114,6 +114,16 @@ def build_ui_app(mgr: "Manager") -> web.Application:
             return web.json_response({"error": str(err)}, status=409)
         return web.json_response(job.to_api())
 
+    async def bulk_dismiss(request: web.Request) -> web.Response:
+        body = await request.json()
+        try:
+            mgr.bulk.dismiss(str(body.get("id", "")))
+        except ValueError as err:
+            return web.json_response({"error": str(err)}, status=404)
+        except RuntimeError as err:
+            return web.json_response({"error": str(err)}, status=409)
+        return web.json_response({"ok": True})
+
     async def bulk_status(_request: web.Request) -> web.Response:
         return web.json_response(mgr.bulk.latest() or {})
 
@@ -269,6 +279,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
     app.router.add_post("/api/presence", presence)
     app.router.add_post("/api/bulk-update", bulk_start)
     app.router.add_get("/api/bulk-update", bulk_status)
+    app.router.add_post("/api/bulk-update/dismiss", bulk_dismiss)
     app.router.add_get("/api/jobs/{job_id}", job)
     app.router.add_patch("/api/sat/{sat_id}", update_sat)
     app.router.add_delete("/api/sat/{sat_id}", delete_sat)

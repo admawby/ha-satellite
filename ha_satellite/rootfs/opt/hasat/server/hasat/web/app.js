@@ -159,7 +159,7 @@ function bulkPanel() {
   const b = state.bulk;
   if (!b || !b.satellites) return "";
   const recent = b.running || (b.finished && Date.now() / 1000 - b.finished < 15 * 60);
-  if (!recent || state.dismissedBulk === b.id) return "";
+  if (!recent || b.dismissed) return "";
   const cls = { running: "warn", waiting: "", done: "ok", failed: "bad", skipped: "" };
   const icon = { running: "…", waiting: "·", done: "✓", failed: "✕", skipped: "–" };
   const single = b.satellites.length === 1 && state.satellites.length > 1;
@@ -210,7 +210,12 @@ function drawList() {
   view.querySelectorAll("[data-bulk]").forEach((b) => (b.onclick = (ev) => { ev.stopPropagation(); startBulk(b.dataset.bulk, [b.dataset.sat]); }));
   view.querySelectorAll("[data-bulk-all]").forEach((b) => (b.onclick = () => startBulk(b.dataset.bulkAll, null)));
   const dismiss = $("#bulk-dismiss");
-  if (dismiss) dismiss.onclick = () => { state.dismissedBulk = state.bulk.id; drawList(); };
+  if (dismiss) dismiss.onclick = async () => {
+    const id = state.bulk.id;
+    state.bulk.dismissed = true;  // hide at once; the add-on remembers it across reloads and devices
+    drawList();
+    try { await api("api/bulk-update/dismiss", { method: "POST", body: { id } }); } catch (e) { toast(e.message); }
+  };
 }
 
 async function startBulk(scope, satIds) {
@@ -223,7 +228,7 @@ async function startBulk(scope, satIds) {
   if (!confirm(`This will ${what} on ${who}.\n\n${notes.join("\n")}\n\nContinue?`)) return;
   try {
     const job = await api("api/bulk-update", { method: "POST", body: { scope, satellites: satIds } });
-    state.bulk = job; state.dismissedBulk = null;
+    state.bulk = job;
     toast("Update started — progress is shown at the top");
     drawList();
   } catch (e) { toast(e.message, 6000); }
