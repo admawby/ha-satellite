@@ -83,6 +83,7 @@ import entities_cases  # noqa: E402
 import gpu_cases  # noqa: E402
 import net_cases  # noqa: E402
 import hang_cases  # noqa: E402
+import reach_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -326,6 +327,10 @@ async def main() -> None:
     async with aiohttp.ClientSession() as http:
         await removal_cases.run(check, http, ui, mgr, sat, agent, TMP / "state")
 
+    print("ping fallback")
+    async with aiohttp.ClientSession() as http:
+        await reach_cases.run(check, http, ui, mgr, free_port)
+
     print("hung agent recovery")
     await hang_cases.run(check, mgr, sat, agent, restarted)
     restarted.clear()
@@ -383,8 +388,8 @@ async def main() -> None:
     sat.agent_update = {"to": "9.9.9", "since": time.time() - 1000}  # never comes back
     await agent_runner.cleanup()
     await mgr.poll_one(sat.id)
-    check(not sat.online and sat.status == "offline" and "did not come back" in sat.last_error,
-          "agent update: a device that does not return is reported offline with the reason")
+    check(not sat.online and sat.status == "agent_down" and "did not come back" in sat.last_error,
+          "agent update: an agent that does not return is reported (device up, agent not responding) with the reason")
     agent_runner = await serve(agent.build_app(), agent_port, agent_server._ssl_context())
     await mgr.poll_one(sat.id)
     check(sat.online, "agent back online")
@@ -408,7 +413,7 @@ async def main() -> None:
 
     await agent_runner.cleanup()
     await mgr.poll_one(sat.id)
-    check(not sat.online, "offline detected when agent stops")
+    check(not sat.online and sat.status == "agent_down", "agent stopped on a reachable device -> 'agent not responding'")
 
     await ui_runner.cleanup()
     await enroll_runner.cleanup()

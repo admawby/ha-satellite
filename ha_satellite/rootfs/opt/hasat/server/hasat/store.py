@@ -35,6 +35,8 @@ class Satellite:
     # Set while the add-on is installing a new agent on the device: {"to": version, "since": ts}.
     # The device restarts during this window; that is expected, not an outage.
     agent_update: Optional[dict[str, Any]] = None
+    # When the agent does not answer: is the device itself up? {up, method, rtt_ms, checked, reason}
+    reach: Optional[dict[str, Any]] = None
 
     PERSISTED = ("id", "name", "host", "port", "created", "hostname")
 
@@ -49,7 +51,11 @@ class Satellite:
     def status(self) -> str:
         if self.agent_update:
             return "updating"
-        return "online" if self.online else "offline"
+        if self.online:
+            return "online"
+        if self.reach and self.reach.get("up"):
+            return "agent_down"  # device answers ping/TCP, the satellite agent does not
+        return "offline"
 
     def to_api(self) -> dict[str, Any]:
         data = asdict(self)

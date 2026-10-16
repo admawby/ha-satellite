@@ -10,6 +10,7 @@
   --ok: #2e9d57;
   --warn: #d98a00;
   --bad: #d64545;
+  --agent: #e8710a;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --radius: 10px;
   color-scheme: light;
@@ -27,6 +28,7 @@
     --ok: #4cc27a;
     --warn: #f0aa2a;
     --bad: #ef6b6b;
+    --agent: #ff9a3d;
     color-scheme: dark;
   }
 }
@@ -64,6 +66,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
 .sat-head h3 { margin: 0; font-size: 16px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
 .dot.on { background: var(--ok); }
+.dot.agent { background: var(--agent); }
 .dot.upd { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
@@ -142,3 +145,8 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 
 .gpu + .gpu { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
 .gpu .row { margin-bottom: 8px; }
+
+.chip.agent { color: var(--agent); }
+.problem { border-left: 4px solid var(--bad); }
+.problem.agent { border-left-color: var(--agent); }
+.problem h4 { margin-bottom: 6px; }

@@ -241,9 +241,42 @@ function gpuCard(s) {
 
 // ------------------------------------------------------------------ list view
 // "updating" = the add-on is installing a new agent and the device is restarting it (expected).
-const dotClass = (s) => (s.status === "updating" ? "upd" : s.online ? "on" : "");
-const statusText = (s) => (s.status === "updating" ? `updating agent to ${s.agent_update.to}…`
-  : s.online ? "online" : `offline · last seen ${fmtAgo(s.last_seen)}`);
+// "agent_down" = the device answers ping/TCP but the HA Satellite agent does not.
+const dotClass = (s) => ({ updating: "upd", online: "on", agent_down: "agent" }[s.status] || "");
+const reachText = (s) => {
+  const r = s.reach || {};
+  if (!r.checked) return "";
+  const how = r.method === "tcp" ? "responds on the network" : "answers ping";
+  return r.up ? `device ${how}${r.rtt_ms != null ? ` (${Math.round(r.rtt_ms)} ms)` : ""}` : "no response to ping";
+};
+const statusText = (s) => {
+  if (s.status === "updating") return `updating agent to ${s.agent_update.to}…`;
+  if (s.status === "online") return "online";
+  if (s.status === "agent_down") return `agent not responding · ${reachText(s)}`;
+  return `offline · ${s.reach ? "no response to ping · " : ""}last seen ${fmtAgo(s.last_seen)}`;
+};
+
+function problemCard(s) {
+  if (s.status === "agent_down") {
+    return `<div class="card section problem agent">
+      <h4>The device is up, but the HA Satellite agent is not responding</h4>
+      <p>${esc(reachText(s))}, so it is powered on and on the network. The problem is the satellite agent:
+        <b>${esc((s.reach || {}).reason || s.last_error)}</b>.</p>
+      <p class="muted">To fix it, launch the satellite again on <code>${esc(s.host)}</code> (<b>Launch satellite</b>, same address).
+        That reinstalls the agent and keeps this satellite's settings. If the device runs a firewall, allow TCP ${esc(s.port)} from Home Assistant.</p>
+      <p class="muted" style="margin-bottom:0">Technical detail: <span class="mono">${esc(s.last_error)}</span></p>
+    </div>`;
+  }
+  if (s.status === "offline" && s.reach) {
+    return `<div class="card section problem">
+      <h4>The device is offline</h4>
+      <p>It does not answer ping or any network probe. It is probably powered off, disconnected, or its IP address
+        changed (now set to <code>${esc(s.host)}</code>; change it under Settings if needed).</p>
+      <p class="muted" style="margin-bottom:0">Last seen ${fmtAgo(s.last_seen)}.</p>
+    </div>`;
+  }
+  return "";
+}
 const STEP_LABEL = { packages: "Packages", docker: "Docker images" };
 const bulkRunFor = (satId) => {
   const b = state.bulk;
@@ -254,7 +287,8 @@ function satCard(s) {
   const m = s.metrics || {}, upd = m.updates || {}, thr = m.throttled || {};
   const chips = [];
   if (s.status === "updating") chips.push(`<span class="chip warn">updating agent to ${esc(s.agent_update.to)}…</span>`);
-  else if (!s.online) chips.push(`<span class="chip bad"${hx(s, "connection")}>offline${s.last_error ? " · " + esc(s.last_error.slice(0, 60)) : ""}</span>`);
+  else if (s.status === "agent_down") chips.push(`<span class="chip agent"${hx(s, "connection")} title="${esc((s.reach || {}).reason || s.last_error)}">agent not responding · device up</span>`);
+  else if (!s.online) chips.push(`<span class="chip bad"${hx(s, "connection")}>offline${s.reach ? " · no ping" : s.last_error ? " · " + esc(s.last_error.slice(0, 60)) : ""}</span>`);
   if (upd.available) chips.push(`<span class="chip warn"${hx(s, "updates_available")}>${upd.available} update${upd.available > 1 ? "s" : ""}</span>`);
   if (upd.reboot_required) chips.push(`<span class="chip warn"${hx(s, "reboot_required")}>reboot required</span>`);
   if (thr.under_voltage_now) chips.push(`<span class="chip bad"${hx(s, "under_voltage")}>under-voltage</span>`);
@@ -477,7 +511,7 @@ function renderDetail() {
   view.querySelectorAll("nav .tab").forEach((t) => (t.onclick = () => go(state.current, t.dataset.t)));
   const el = $("#tab");
   if (!s.online && !["settings", "overview"].includes(state.tab)) {
-    el.innerHTML = `<div class="card">Satellite is offline${s.last_error ? `: <span class="bad">${esc(s.last_error)}</span>` : ""}.</div>`;
+    el.innerHTML = problemCard(s) || `<div class="card">Satellite is offline${s.last_error ? `: <span class="bad">${esc(s.last_error)}</span>` : ""}.</div>`;
     return;
   }
   ({ overview: tabOverview, radios: tabRadios, terminal: tabTerminal, updates: tabUpdates, docker: tabDocker, logs: tabLogs, settings: tabSettings })[state.tab](el, s);
@@ -489,7 +523,7 @@ function tabOverview(el, s) {
   const draw = () => {
     const sat = currentSat(); const m = sat.metrics || {}; const thr = m.throttled; const upd = m.updates || {};
     const addrs = Object.entries(m.addresses || {}).map(([k, v]) => `${esc(k)}: ${v.map(esc).join(", ")}`).join("<br>");
-    el.innerHTML = `
+    el.innerHTML = `${problemCard(sat)}
       <div class="two">
         <div class="card">
           <h4>Health</h4>

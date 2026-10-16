@@ -16,6 +16,7 @@ from .config import AGENT_SRC_DIR, DATA_DIR, ENROLL_PORT, SUPERVISOR_TOKEN, SUPE
 from .bulk import BulkUpdates
 from .ha_bridge import HABridge
 from .ha_entities import EntityResolver
+from . import reachability
 from .pki import PKI
 from .store import Satellite, Store
 
@@ -208,6 +209,7 @@ class Manager:
             if not sat.online:
                 _LOGGER.info("Satellite %s is online", sat.name)
             sat.online, sat.last_seen, sat.last_error = True, time.time(), ""
+            sat.reach = None
             hostname = sat.metrics.get("hostname")
             if hostname and hostname != sat.hostname:
                 sat.hostname = hostname
@@ -234,6 +236,7 @@ class Manager:
                 if sat.online:
                     _LOGGER.warning("Satellite %s went offline: %s", sat.name, err)
                 sat.online, sat.last_error = False, str(err)
+                await self._check_reachability(sat)
                 if "Timeout" in str(err):
                     await self._rescue_hung_agent(sat)
         # Home Assistant gets updates at the normal pace even while the UI polls fast,
@@ -246,6 +249,24 @@ class Manager:
             current = sat.metrics.get("agent_version")
             if current and current != self.agent_version and sat.id not in self._updating:
                 asyncio.create_task(self.push_agent_update(sat))
+
+    REACH_INTERVAL = 10.0  # seconds between reachability checks of a non-answering satellite
+
+    async def _check_reachability(self, sat: Satellite) -> None:
+        """Agent not answering: ping the device to tell "offline" from "agent not working"."""
+        if sat.reach and time.time() - sat.reach.get("checked", 0) < self.REACH_INTERVAL:
+            sat.reach["reason"] = reachability.explain(sat.last_error)
+            return
+        was = sat.status
+        r = await reachability.check(sat.host)
+        sat.reach = {"up": r.up, "method": r.method, "rtt_ms": r.rtt_ms, "checked": r.checked,
+                     "reason": reachability.explain(sat.last_error)}
+        if sat.status != was:
+            if r.up:
+                _LOGGER.warning("Satellite %s: device answers %s but the agent does not: %s",
+                                sat.name, r.method, sat.reach["reason"])
+            else:
+                _LOGGER.warning("Satellite %s: device does not answer ping either; it is offline", sat.name)
 
     RESCUE_INTERVAL = 600.0  # at most one rescue reinstall per satellite every 10 minutes
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0
+
+- **Offline vs. broken agent**: when a satellite's agent does not answer, the add-on pings the device
+  (TCP probe as fallback) and shows either **agent not responding** (orange: the device is up, the
+  HA Satellite agent is not installed, stopped, hung, blocked or has the wrong certificate) or
+  **offline** (red: the device does not answer at all)
+- The satellite page explains the cause in plain English and how to fix it
+- Home Assistant's Connection sensor gains the value `agent_down`
+
 ## 0.10.0
 
 - **Fix: Raspberry Pis stopped reporting after the 0.9.0 update.** The new GPU code searched

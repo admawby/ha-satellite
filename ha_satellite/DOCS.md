@@ -222,6 +222,19 @@ package/container updates, power warnings, IP address, connection and agent vers
 Entities you renamed in Home Assistant are still found, because they are matched by their
 unique ID. If you open the add-on outside Home Assistant, a click opens HA's History page instead.
 
+**Device offline or agent broken?** When a satellite's agent does not answer, the add-on
+pings the device (falling back to a TCP probe if ICMP is not allowed) to tell the two apart:
+
+| Status | Meaning |
+| --- | --- |
+| online (green) | the agent answers |
+| updating (amber, pulsing) | the agent is restarting on a new version |
+| agent not responding (orange) | the device answers ping, but the HA Satellite agent does not: not installed, removed, service stopped, hung, wrong certificate, or a firewall blocks its port. The satellite page explains which and how to fix it (usually: launch the satellite again on the same address) |
+| offline (red) | the device does not answer at all: powered off, disconnected, or its IP address changed |
+
+The **Connection** sensor in Home Assistant reports the same: `online`, `updating`,
+`agent_down` or `offline`.
+
 **Agent updates are not outages.** When the add-on installs a new agent on a device (after
 an add-on update, *Reinstall agent*, or *Install* on the update entity), the device restarts
 its agent. For up to 3 minutes that restart is shown as **updating**: an amber pulsing dot in
