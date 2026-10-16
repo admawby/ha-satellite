@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 import platform
 import shutil
 import socket
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -105,13 +108,40 @@ def _synology_model() -> Optional[str]:
     return f"Synology {model}" if model else None
 
 
+def _net() -> dict:
+    from . import net
+
+    try:
+        return net.collect()
+    except Exception:  # noqa: BLE001 - never break the health report
+        return {"interfaces": []}
+
+
+# GPU probing calls drivers and external tools; it runs on its own thread with a time
+# limit so a stuck probe can never freeze the whole health report again.
+_GPU_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu")
+_GPU_STATE: Dict[str, Any] = {"future": None, "last": [], "warned": False}
+GPU_TIMEOUT = 10.0
+
+
 def _gpus() -> list:
     from . import gpu  # local import: optional hardware probing
 
+    fut = _GPU_STATE["future"]
+    if fut is not None and not fut.done():
+        return _GPU_STATE["last"]  # previous probe still running: report the last good values
+    fut = _GPU_POOL.submit(gpu.collect, cpu_temp())
+    _GPU_STATE["future"] = fut
     try:
-        return gpu.collect(cpu_temp())
+        _GPU_STATE["last"] = fut.result(timeout=GPU_TIMEOUT)
+    except FuturesTimeout:
+        if not _GPU_STATE["warned"]:
+            _GPU_STATE["warned"] = True
+            logging.getLogger(__name__).warning("GPU probing took longer than %.0f s; skipping GPU data", GPU_TIMEOUT)
+        return _GPU_STATE["last"]
     except Exception:  # noqa: BLE001 - GPU stats must never break the health report
         return []
+    return _GPU_STATE["last"]
 
 
 def addresses() -> Dict[str, list]:
@@ -150,5 +180,6 @@ def collect() -> Dict[str, Any]:
         "boot_time_iso": dt.datetime.fromtimestamp(boot, dt.timezone.utc).isoformat(),
         "throttled": throttled(),
         "gpus": _gpus(),
+        "net": _net(),
         "addresses": addresses(),
     }

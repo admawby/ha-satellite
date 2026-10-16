@@ -253,12 +253,25 @@ _V3D_LAST: Dict[str, Tuple[int, int]] = {}
 _V3D_STATS: List[Optional[str]] = []  # cached path (searched once)
 
 
-def raspberry_pi(soc_temp: Optional[float]) -> List[Dict[str, Any]]:
+def _find_v3d_stats(cards: List[Tuple[str, str, str]]) -> Optional[str]:
+    """Locate V3D's gpu_stats without walking /sys: sysfs is full of symlink loops, so a
+    recursive search never finishes (this hung the agent on Raspberry Pis in 0.9.0)."""
+    for card, driver, _pci in cards:
+        if driver == "v3d" and os.path.exists(f"{card}/device/gpu_stats"):
+            return f"{card}/device/gpu_stats"
+    for pattern in ("/sys/devices/platform/*.v3d/gpu_stats", "/sys/devices/platform/*/*.v3d/gpu_stats"):
+        found = glob.glob(pattern)  # fixed depth, no recursion
+        if found:
+            return found[0]
+    return None
+
+
+def raspberry_pi(soc_temp: Optional[float], cards: Optional[List[Tuple[str, str, str]]] = None) -> List[Dict[str, Any]]:
     model = _read("/proc/device-tree/model") or ""
     if "Raspberry Pi" not in model:
         return []
     if not _V3D_STATS:
-        _V3D_STATS.append(next(iter(glob.glob("/sys/devices/platform/**/gpu_stats", recursive=True)), None))
+        _V3D_STATS.append(_find_v3d_stats(cards if cards is not None else _drm_cards()))
     stats = _V3D_STATS[0]
     usage = None
     if stats:
@@ -297,7 +310,7 @@ def collect(soc_temp: Optional[float] = None) -> List[Dict[str, Any]]:
             _LOGGER.exception("GPU source failed")
     if not gpus:
         try:
-            gpus += raspberry_pi(soc_temp)
+            gpus += raspberry_pi(soc_temp, cards)
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Raspberry Pi GPU stats failed")
     counters: Dict[str, int] = {}

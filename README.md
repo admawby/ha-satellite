@@ -12,7 +12,7 @@ Assistant instance — one add-on, installed from this repository.
 - **Remote USB radios** — share Z-Wave / Zigbee / Thread sticks plugged into a Pi
   with Z-Wave JS, Zigbee2MQTT or ZHA running on your main HA
 - **Monitoring** — CPU temperature, usage, memory, disk, GPU usage/temperature (NVIDIA, Intel,
-  AMD, Pi), under-voltage and throttling as HA entities (MQTT discovery), with reboot/update buttons
+  AMD, Pi), network throughput, under-voltage and throttling as HA entities (MQTT discovery), with reboot/update buttons
 - **Built-in CLI** — full web terminal plus a one-shot command runner and journal viewer
 - **Docker** — one-click Docker install, manage containers (start/stop/restart/logs) and
   keep images updated on their own schedule, safely recreating containers with the same configuration

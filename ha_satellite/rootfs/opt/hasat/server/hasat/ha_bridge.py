@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -48,6 +49,14 @@ SENSORS: list[Entity] = [
     Entity("mem_percent", "Memory usage", unit="%", state_class="measurement", icon="mdi:memory", precision=0),
     Entity("disk_percent", "Disk usage", unit="%", state_class="measurement", icon="mdi:harddisk", precision=0),
     Entity("load_1", "Load (1m)", state_class="measurement", icon="mdi:gauge", precision=2),
+    Entity("net_rx", "Network download", unit="Mbit/s", device_class="data_rate", state_class="measurement",
+           icon="mdi:download-network", precision=2),
+    Entity("net_tx", "Network upload", unit="Mbit/s", device_class="data_rate", state_class="measurement",
+           icon="mdi:upload-network", precision=2),
+    Entity("net_rx_total", "Data received", unit="GB", device_class="data_size", state_class="total_increasing",
+           icon="mdi:download-network-outline", precision=2, category="diagnostic"),
+    Entity("net_tx_total", "Data sent", unit="GB", device_class="data_size", state_class="total_increasing",
+           icon="mdi:upload-network-outline", precision=2, category="diagnostic"),
     Entity("boot_time", "Last boot", device_class="timestamp", category="diagnostic"),
     Entity("updates_available", "Package updates", icon="mdi:package-up", state_class="measurement", feature="updates"),
     Entity("docker_updates", "Container updates", icon="mdi:docker", state_class="measurement", feature="docker"),
@@ -97,10 +106,34 @@ def gpu_entities(sat: Satellite) -> list[Entity]:
     return out
 
 
+def _iface_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "if"
+
+
+def net_entities(sat: Satellite) -> list[Entity]:
+    """Per-interface rates, only when the device has several physical interfaces."""
+    ifaces = ((sat.metrics or {}).get("net") or {}).get("interfaces") or []
+    if len(ifaces) < 2:
+        return []
+    out: list[Entity] = []
+    for i in ifaces:
+        k = f"net_{_iface_key(i['name'])}"
+        out.append(Entity(f"{k}_rx", f"{i['name']} download", unit="Mbit/s", device_class="data_rate",
+                          state_class="measurement", icon="mdi:download-network", precision=2))
+        out.append(Entity(f"{k}_tx", f"{i['name']} upload", unit="Mbit/s", device_class="data_rate",
+                          state_class="measurement", icon="mdi:upload-network", precision=2))
+    return out
+
+
+def dynamic_entities(sat: Satellite) -> list[Entity]:
+    """Entities that depend on the hardware the satellite reports (GPUs, network interfaces)."""
+    return gpu_entities(sat) + net_entities(sat)
+
+
 def entities_for(sat: Satellite) -> list[Entity]:
     """Every entity this satellite should have: fixed ones for its features plus its GPUs."""
     feats = sat_features(sat)
-    return [e for e in SENSORS if e.feature in feats] + gpu_entities(sat)
+    return [e for e in SENSORS if e.feature in feats] + dynamic_entities(sat)
 
 
 def flatten(sat: Satellite) -> dict[str, Any]:
@@ -111,6 +144,19 @@ def flatten(sat: Satellite) -> dict[str, Any]:
     load = m.get("load") or [None]
     dock = m.get("docker") or {}
     values: dict[str, Any] = {}
+    net = m.get("net") or {}
+
+    def mbit(bps):
+        return round(bps * 8 / 1e6, 3) if bps is not None else None
+
+    values.update({
+        "net_rx": mbit(net.get("rx_bps")), "net_tx": mbit(net.get("tx_bps")),
+        "net_rx_total": round(net["rx_total"] / 1e9, 3) if net.get("rx_total") is not None else None,
+        "net_tx_total": round(net["tx_total"] / 1e9, 3) if net.get("tx_total") is not None else None,
+    })
+    for i in net.get("interfaces") or []:
+        k = f"net_{_iface_key(i['name'])}"
+        values.update({f"{k}_rx": mbit(i.get("rx_bps")), f"{k}_tx": mbit(i.get("tx_bps"))})
     for g in m.get("gpus") or []:
         k = f"gpu_{g['key']}"
         values.update({f"{k}_usage": g.get("usage"), f"{k}_temp": g.get("temp"),
@@ -287,7 +333,7 @@ class HABridge:
         which keeps their history."""
         if not (self._http and SUPERVISOR_TOKEN):
             return
-        for ent in SENSORS + gpu_entities(sat):
+        for ent in SENSORS + dynamic_entities(sat):
             if ent.component not in ("sensor", "binary_sensor"):
                 continue
             try:
@@ -328,7 +374,7 @@ class HABridge:
         avail_topic = f"{BASE}/{sat.id}/availability"
         state_topic = f"{BASE}/{sat.id}/state"
         feats = sat_features(sat)
-        gpu_ents = gpu_entities(sat)
+        gpu_ents = dynamic_entities(sat)
         key = (tuple(sorted(feats)), tuple(e.key for e in gpu_ents))
         # Announce once we know the satellite's features (and GPUs), and again if they change.
         if sat.metrics and self._announced.get(sat.id) != key:
@@ -391,7 +437,7 @@ class HABridge:
             return
         values = flatten(sat)
         feats = sat_features(sat)
-        for ent in SENSORS + gpu_entities(sat):
+        for ent in SENSORS + dynamic_entities(sat):
             if ent.component in ("button", "update") or ent.feature not in feats:
                 continue
             domain = "binary_sensor" if ent.component == "binary_sensor" else "sensor"
@@ -422,7 +468,7 @@ class HABridge:
             await self._delete_rest_states(sat)
         self._rest_cleaned.discard(sat.id)
         if self._mqtt and self._mqtt_connected:
-            gpu_keys = {e.key for e in gpu_entities(sat)} | self._announced_gpu.get(sat.id, set())
+            gpu_keys = {e.key for e in dynamic_entities(sat)} | self._announced_gpu.get(sat.id, set())
             for comp, k in [(e.component, e.key) for e in SENSORS] + [("sensor", k) for k in gpu_keys]:
                 self._mqtt.publish(f"{DISCOVERY_PREFIX}/{comp}/hasat_{sat.id}/{k}/config", "", retain=True)
             for suffix in ("state", "availability", "connection", "agent_update"):

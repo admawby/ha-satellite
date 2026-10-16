@@ -81,6 +81,8 @@ import terminal_cases  # noqa: E402
 import live_bulk_cases  # noqa: E402
 import entities_cases  # noqa: E402
 import gpu_cases  # noqa: E402
+import net_cases  # noqa: E402
+import hang_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -292,6 +294,9 @@ async def main() -> None:
     print("gpu")
     gpu_cases.run(check, sat)
 
+    print("network")
+    net_cases.run(check, sat)
+
     print("history links")
     sup_runner = await serve(entities_cases.fake_supervisor(sat.id), SUPERVISOR_PORT)
     async with aiohttp.ClientSession() as http:
@@ -320,6 +325,12 @@ async def main() -> None:
     print("removal")
     async with aiohttp.ClientSession() as http:
         await removal_cases.run(check, http, ui, mgr, sat, agent, TMP / "state")
+
+    print("hung agent recovery")
+    await hang_cases.run(check, mgr, sat, agent, restarted)
+    restarted.clear()
+    sat.agent_update = None
+    mgr._updating.discard(sat.id)
 
     print("agent self-update")
     result = await mgr.push_agent_update(sat)

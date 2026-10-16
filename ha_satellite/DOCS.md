@@ -193,6 +193,14 @@ entity IDs and therefore their history.
   bundled with the add-on. It appears under *Settings → Updates* when they differ, and
   shows *Installing…* while the device restarts on its new agent
 
+**Network throughput.** Download and upload rates of the device's physical interfaces
+(Ethernet, Wi-Fi) are shown on the tile (↓/↑) and in a **Network** card on the Overview tab,
+with link speed, IP address, errors/drops and data transferred since boot. Virtual interfaces
+(Docker bridges, veth pairs, VPN tunnels such as Tailscale, bond/OVS masters, loopback) are
+ignored so traffic is not counted twice. Home Assistant gets *Network download* / *Network
+upload* (Mbit/s) and *Data received* / *Data sent* (GB, usable in long-term statistics); a
+device with several physical interfaces also gets per-interface download/upload sensors.
+
 **GPUs.** Graphics cards and integrated GPUs are detected automatically and shown on
 the satellite tile (usage and temperature) and in a **Graphics** card on the Overview tab:
 

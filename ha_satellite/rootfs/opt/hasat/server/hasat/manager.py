@@ -44,6 +44,7 @@ class Manager:
         self.enroll_port = ENROLL_PORT
         self._poll_task: asyncio.Task | None = None
         self._updating: set[str] = set()
+        self._rescued: dict[str, float] = {}
         # Live mode: browser tabs that are actively viewing the UI hold a short lease.
         self._viewers: dict[str, float] = {}
         self._wake = asyncio.Event()
@@ -233,6 +234,8 @@ class Manager:
                 if sat.online:
                     _LOGGER.warning("Satellite %s went offline: %s", sat.name, err)
                 sat.online, sat.last_error = False, str(err)
+                if "Timeout" in str(err):
+                    await self._rescue_hung_agent(sat)
         # Home Assistant gets updates at the normal pace even while the UI polls fast,
         # so live mode does not flood HA's history database. State changes go out at once.
         last_time, last_status = self._published.get(sat.id, (0.0, ""))
@@ -243,6 +246,29 @@ class Manager:
             current = sat.metrics.get("agent_version")
             if current and current != self.agent_version and sat.id not in self._updating:
                 asyncio.create_task(self.push_agent_update(sat))
+
+    RESCUE_INTERVAL = 600.0  # at most one rescue reinstall per satellite every 10 minutes
+
+    async def _rescue_hung_agent(self, sat: Satellite) -> None:
+        """The device accepts connections but its status request hangs (e.g. a bug in a probe).
+
+        If the agent still answers a trivial request, reinstall the agent bundled with this
+        add-on: that restarts it and delivers fixes, without anyone touching the device."""
+        if not self.options.auto_update_agents or sat.id in self._updating:
+            return
+        if time.time() - self._rescued.get(sat.id, 0.0) < self.RESCUE_INTERVAL:
+            return
+        try:
+            await self.client.request(sat, "GET", "/api/settings", timeout=8)
+        except AgentError:
+            return  # really unreachable; nothing to rescue
+        self._rescued[sat.id] = time.time()
+        _LOGGER.warning("Satellite %s answers but its status request hangs; reinstalling agent %s",
+                        sat.name, self.agent_version)
+        try:
+            await self.push_agent_update(sat)
+        except AgentError:
+            pass
 
     # ------------------------------------------------------------- actions
     async def push_agent_update(self, sat: Satellite) -> dict:

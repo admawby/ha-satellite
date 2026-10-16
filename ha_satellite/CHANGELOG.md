@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.0
+
+- **Fix: Raspberry Pis stopped reporting after the 0.9.0 update.** The new GPU code searched
+  `/sys` recursively for the Pi's GPU statistics; sysfs contains symlink loops, so the search
+  never finished and every status request hung (Pis showed offline with a TimeoutError).
+  The file is now found through the GPU's driver entry, with no recursive search
+- GPU probing runs with a 10-second time limit, so a stuck probe can no longer freeze a
+  device's health report
+- **Automatic recovery**: when a satellite accepts connections but its status request hangs,
+  the add-on reinstalls the agent (at most every 10 minutes). Satellites stuck on 0.9.0 recover
+  on their own once the add-on is updated
+- **Network throughput**: download/upload rates per physical interface (Ethernet, Wi-Fi), link
+  speed and data transferred, on tiles and in a Network card; HA sensors for download/upload
+  (Mbit/s) and data received/sent (GB), plus per-interface sensors on multi-interface devices
+
 ## 0.9.0
 
 - **GPU usage and temperatures**: NVIDIA (nvidia-smi: usage, encoder/decoder, temperature, VRAM,

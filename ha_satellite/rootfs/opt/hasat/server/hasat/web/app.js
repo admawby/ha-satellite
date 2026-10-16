@@ -141,6 +141,57 @@ document.addEventListener("click", (ev) => {
   openMoreInfo(el.dataset.entity);
 }, true);
 
+// ------------------------------------------------------------------ network
+// Rates arrive in bytes/s; shown in bits/s like routers and speed tests do.
+const fmtRate = (bps) => {
+  if (bps == null) return "–";
+  const bits = bps * 8;
+  if (bits >= 1e9) return `${(bits / 1e9).toFixed(2)} Gbit/s`;
+  if (bits >= 1e6) return `${(bits / 1e6).toFixed(bits >= 1e8 ? 0 : 1)} Mbit/s`;
+  if (bits >= 1e3) return `${Math.round(bits / 1e3)} kbit/s`;
+  return `${Math.round(bits)} bit/s`;
+};
+const netOf = (s) => ((s.metrics || {}).net || {});
+const ifaceKey = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "if";
+
+function netChip(s) {
+  const n = netOf(s);
+  if (n.rx_bps == null && n.tx_bps == null) return "";
+  return `<span class="chip"${hx(s, "net_rx")} title="Network download / upload">↓ ${fmtRate(n.rx_bps)} ↑ ${fmtRate(n.tx_bps)}</span>`;
+}
+
+function netCard(s) {
+  const n = netOf(s);
+  const ifaces = n.interfaces || [];
+  if (!ifaces.length) return "";
+  const many = ifaces.length > 1;
+  return `
+    <div class="card section">
+      <h4>Network</h4>
+      ${many ? `<div class="stats" style="margin-bottom:12px">
+        <div class="stat"${hx(s, "net_rx")}><div class="v">${fmtRate(n.rx_bps)}</div><div class="l">Download (all)</div></div>
+        <div class="stat"${hx(s, "net_tx")}><div class="v">${fmtRate(n.tx_bps)}</div><div class="l">Upload (all)</div></div>
+        <div class="stat"${hx(s, "net_rx_total")}><div class="v">${fmtBytes(n.rx_total)}</div><div class="l">Received since boot</div></div>
+        <div class="stat"${hx(s, "net_tx_total")}><div class="v">${fmtBytes(n.tx_total)}</div><div class="l">Sent since boot</div></div>
+      </div>` : ""}
+      ${ifaces.map((i) => {
+        const k = many ? `net_${ifaceKey(i.name)}` : "net";
+        const meta = [i.wireless ? "Wi-Fi" : "Ethernet", i.speed_mbps ? `${i.speed_mbps >= 1000 ? `${i.speed_mbps / 1000} Gbit/s` : `${i.speed_mbps} Mbit/s`} link` : "",
+          i.ipv4 || "", i.up ? "" : "down", i.errors || i.drops ? `${i.errors} errors · ${i.drops} drops` : ""].filter(Boolean).join(" · ");
+        return `
+        <div class="gpu">
+          <div class="row"><b class="mono">${esc(i.name)}</b><span class="muted ${i.up ? "" : "bad"}">${esc(meta)}</span></div>
+          <div class="stats">
+            <div class="stat"${hx(s, `${k}_rx`)}><div class="v">${fmtRate(i.rx_bps)}</div><div class="l">Download</div></div>
+            <div class="stat"${hx(s, `${k}_tx`)}><div class="v">${fmtRate(i.tx_bps)}</div><div class="l">Upload</div></div>
+            <div class="stat"${many ? "" : hx(s, "net_rx_total")}><div class="v">${fmtBytes(i.rx_total)}</div><div class="l">Received since boot</div></div>
+            <div class="stat"${many ? "" : hx(s, "net_tx_total")}><div class="v">${fmtBytes(i.tx_total)}</div><div class="l">Sent since boot</div></div>
+          </div>
+        </div>`;
+      }).join("")}
+    </div>`;
+}
+
 // ------------------------------------------------------------------ GPUs
 const GPU_BRAND = { nvidia: "NVIDIA", intel: "Intel", amd: "AMD", pi: "VideoCore" };
 const ENGINE_LABEL = { render: "3D/render", video: "video (decode/encode)", video2: "video 2", video_enhance: "video enhance",
@@ -233,7 +284,7 @@ function satCard(s) {
       <div class="stat"${hx(s, "mem_percent")}><div class="v ${level(m.mem_percent, 80, 92)}">${fmtPct(m.mem_percent)}</div><div class="l">Memory</div></div>
       <div class="stat"${hx(s, "disk_percent")}><div class="v ${level(m.disk_percent, 80, 92)}">${fmtPct(m.disk_percent)}</div><div class="l">Disk</div></div>
     </div>
-    <div class="chips">${progress}${gpuChips(s)}${chips.join("")}<span class="chip"${hx(s, "boot_time")}>up ${fmtDur(m.uptime)}</span></div>
+    <div class="chips">${progress}${netChip(s)}${gpuChips(s)}${chips.join("")}<span class="chip"${hx(s, "boot_time")}>up ${fmtDur(m.uptime)}</span></div>
     ${actions ? `<div class="tile-actions">${actions}</div>` : ""}
   </div>`;
 }
@@ -483,7 +534,7 @@ function tabOverview(el, s) {
             ${has(sat, "power") ? '<button class="btn" id="o-reboot">Reboot</button>' : ""}
           </div>
         </div>
-      </div>${gpuCard(sat)}`;
+      </div>${netCard(sat)}${gpuCard(sat)}`;
     on("#o-term", () => go(state.current, "terminal"));
     on("#o-reboot", () => reboot());
   };
