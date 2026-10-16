@@ -95,6 +95,7 @@ async function refresh() {
   state.live = data.live;
   state.pollInterval = data.poll_interval;
   state.bulk = data.bulk;
+  state.entities = data.entities || {};
 }
 const currentSat = () => state.satellites.find((s) => s.id === state.current);
 
@@ -109,6 +110,36 @@ async function render() {
   try { await refresh(); } catch (e) { view.innerHTML = `<div class="card bad">Failed to load: ${esc(e.message)}</div>`; return; }
   if (state.current && currentSat()) renderDetail(); else { state.current = null; renderList(); }
 }
+
+// ------------------------------------------------------------------ HA history pop-ups
+// Values with a Home Assistant entity open HA's own "more info" dialog (history graph).
+const entityFor = (s, key) => ((state.entities || {})[s.id] || {})[key];
+const hx = (s, key) => {
+  const id = entityFor(s, key);
+  return id ? ` data-entity="${esc(id)}" title="Show ${esc(id)} history in Home Assistant"` : "";
+};
+
+function openMoreInfo(entityId) {
+  // The add-on page is an ingress iframe on Home Assistant's own origin, so it can ask
+  // the surrounding HA frontend to open its more-info dialog, exactly like a card does.
+  try {
+    const ha = window.parent !== window && window.parent.document.querySelector("home-assistant");
+    if (ha) {
+      ha.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId }, bubbles: true, composed: true }));
+      return;
+    }
+  } catch { /* not embedded in Home Assistant */ }
+  window.open(`/history?entity_id=${encodeURIComponent(entityId)}`, "_blank", "noopener");
+}
+
+// Capture phase: handle the click before a tile's own "open satellite" handler.
+document.addEventListener("click", (ev) => {
+  const el = ev.target.closest && ev.target.closest("[data-entity]");
+  if (!el) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  openMoreInfo(el.dataset.entity);
+}, true);
 
 // ------------------------------------------------------------------ list view
 // "updating" = the add-on is installing a new agent and the device is restarting it (expected).
@@ -125,14 +156,14 @@ function satCard(s) {
   const m = s.metrics || {}, upd = m.updates || {}, thr = m.throttled || {};
   const chips = [];
   if (s.status === "updating") chips.push(`<span class="chip warn">updating agent to ${esc(s.agent_update.to)}…</span>`);
-  else if (!s.online) chips.push(`<span class="chip bad">offline${s.last_error ? " · " + esc(s.last_error.slice(0, 60)) : ""}</span>`);
-  if (upd.available) chips.push(`<span class="chip warn">${upd.available} update${upd.available > 1 ? "s" : ""}</span>`);
-  if (upd.reboot_required) chips.push(`<span class="chip warn">reboot required</span>`);
-  if (thr.under_voltage_now) chips.push(`<span class="chip bad">under-voltage</span>`);
-  if (thr.throttled_now) chips.push(`<span class="chip bad">throttled</span>`);
+  else if (!s.online) chips.push(`<span class="chip bad"${hx(s, "connection")}>offline${s.last_error ? " · " + esc(s.last_error.slice(0, 60)) : ""}</span>`);
+  if (upd.available) chips.push(`<span class="chip warn"${hx(s, "updates_available")}>${upd.available} update${upd.available > 1 ? "s" : ""}</span>`);
+  if (upd.reboot_required) chips.push(`<span class="chip warn"${hx(s, "reboot_required")}>reboot required</span>`);
+  if (thr.under_voltage_now) chips.push(`<span class="chip bad"${hx(s, "under_voltage")}>under-voltage</span>`);
+  if (thr.throttled_now) chips.push(`<span class="chip bad"${hx(s, "throttled")}>throttled</span>`);
   const bridges = (m.serial || []).filter((b) => b.enabled);
   const dk = m.docker || {};
-  if (dk.available) chips.push(`<span class="chip ${dk.updates_available ? "warn" : ""}">Docker ${dk.running}/${dk.total}${dk.updates_available ? ` · ${dk.updates_available} image update${dk.updates_available > 1 ? "s" : ""}` : ""}</span>`);
+  if (dk.available) chips.push(`<span class="chip ${dk.updates_available ? "warn" : ""}"${hx(s, dk.updates_available ? "docker_updates" : "containers_running")}>Docker ${dk.running}/${dk.total}${dk.updates_available ? ` · ${dk.updates_available} image update${dk.updates_available > 1 ? "s" : ""}` : ""}</span>`);
   if (bridges.length) chips.push(`<span class="chip ok">${bridges.length} radio bridge${bridges.length > 1 ? "s" : ""}</span>`);
   if (m.agent_version && state.controller && m.agent_version !== state.controller.agent_version) chips.push(`<span class="chip">agent ${esc(m.agent_version)}</span>`);
 
@@ -150,12 +181,12 @@ function satCard(s) {
     <div class="sat-head"><span class="dot ${dotClass(s)}" title="${esc(statusText(s))}"></span><h3>${esc(s.name)}</h3><span class="muted mono">${esc(s.host)}</span></div>
     <div class="muted">${esc(m.model || s.hostname || "")}${m.mode === "container" ? " · container agent" : ""}</div>
     <div class="stats">
-      <div class="stat"><div class="v ${level(m.cpu_temp, 65, 80)}">${fmtTemp(m.cpu_temp)}</div><div class="l">CPU temp</div></div>
-      <div class="stat"><div class="v">${fmtPct(m.cpu_percent)}</div><div class="l">CPU</div></div>
-      <div class="stat"><div class="v ${level(m.mem_percent, 80, 92)}">${fmtPct(m.mem_percent)}</div><div class="l">Memory</div></div>
-      <div class="stat"><div class="v ${level(m.disk_percent, 80, 92)}">${fmtPct(m.disk_percent)}</div><div class="l">Disk</div></div>
+      <div class="stat"${hx(s, "cpu_temp")}><div class="v ${level(m.cpu_temp, 65, 80)}">${fmtTemp(m.cpu_temp)}</div><div class="l">CPU temp</div></div>
+      <div class="stat"${hx(s, "cpu_percent")}><div class="v">${fmtPct(m.cpu_percent)}</div><div class="l">CPU</div></div>
+      <div class="stat"${hx(s, "mem_percent")}><div class="v ${level(m.mem_percent, 80, 92)}">${fmtPct(m.mem_percent)}</div><div class="l">Memory</div></div>
+      <div class="stat"${hx(s, "disk_percent")}><div class="v ${level(m.disk_percent, 80, 92)}">${fmtPct(m.disk_percent)}</div><div class="l">Disk</div></div>
     </div>
-    <div class="chips">${progress}${chips.join("")}<span class="chip">up ${fmtDur(m.uptime)}</span></div>
+    <div class="chips">${progress}${chips.join("")}<span class="chip"${hx(s, "boot_time")}>up ${fmtDur(m.uptime)}</span></div>
     ${actions ? `<div class="tile-actions">${actions}</div>` : ""}
   </div>`;
 }
@@ -340,7 +371,7 @@ function renderDetail() {
       <span class="dot ${dotClass(s)}" title="${esc(statusText(s))}"></span><h2>${esc(s.name)}</h2>
       <span class="muted mono">${esc(s.host)} · ${esc(s.id)}</span>
       <span class="spacer"></span>
-      <span class="muted ${s.status === "updating" ? "warn" : ""}">${esc(statusText(s))}</span>
+      <span class="muted ${s.status === "updating" ? "warn" : ""}"${hx(s, "connection")}>${esc(statusText(s))}</span>
     </div>
     <nav class="tabs">${tabs.map(([k, l]) => `<button class="tab ${k === state.tab ? "active" : ""}" data-t="${k}">${l}</button>`).join("")}</nav>
     <section id="tab"></section>`;
@@ -365,20 +396,20 @@ function tabOverview(el, s) {
         <div class="card">
           <h4>Health</h4>
           <div class="stats">
-            <div class="stat"><div class="v ${level(m.cpu_temp, 65, 80)}">${fmtTemp(m.cpu_temp)}</div><div class="l">CPU temp</div></div>
-            <div class="stat"><div class="v">${fmtPct(m.cpu_percent)}</div><div class="l">CPU ${m.cpu_freq_mhz ? "· " + m.cpu_freq_mhz + " MHz" : ""}</div></div>
-            <div class="stat"><div class="v">${(m.load || ["–"])[0]}</div><div class="l">Load 1m</div></div>
-            <div class="stat"><div class="v">${fmtDur(m.uptime)}</div><div class="l">Uptime</div></div>
+            <div class="stat"${hx(s, "cpu_temp")}><div class="v ${level(m.cpu_temp, 65, 80)}">${fmtTemp(m.cpu_temp)}</div><div class="l">CPU temp</div></div>
+            <div class="stat"${hx(s, "cpu_percent")}><div class="v">${fmtPct(m.cpu_percent)}</div><div class="l">CPU ${m.cpu_freq_mhz ? "· " + m.cpu_freq_mhz + " MHz" : ""}</div></div>
+            <div class="stat"${hx(s, "load_1")}><div class="v">${(m.load || ["–"])[0]}</div><div class="l">Load 1m</div></div>
+            <div class="stat"${hx(s, "boot_time")}><div class="v">${fmtDur(m.uptime)}</div><div class="l">Uptime</div></div>
           </div>
           <div class="section" style="margin-top:14px">
-            <div class="row"><span>Memory</span><span class="spacer"></span><span class="muted">${fmtBytes(m.mem_used)} / ${fmtBytes(m.mem_total)}</span></div>${bar(m.mem_percent, 80, 92)}
-            <div class="row" style="margin-top:8px"><span>Disk ${containerMode(sat) ? "(data volume)" : "/"}</span><span class="spacer"></span><span class="muted">${fmtBytes(m.disk_used)} / ${fmtBytes(m.disk_total)}</span></div>${bar(m.disk_percent, 80, 92)}
+            <div class="row"${hx(s, "mem_percent")}><span>Memory</span><span class="spacer"></span><span class="muted">${fmtBytes(m.mem_used)} / ${fmtBytes(m.mem_total)}</span></div>${bar(m.mem_percent, 80, 92)}
+            <div class="row" style="margin-top:8px"${hx(s, "disk_percent")}><span>Disk ${containerMode(sat) ? "(data volume)" : "/"}</span><span class="spacer"></span><span class="muted">${fmtBytes(m.disk_used)} / ${fmtBytes(m.disk_total)}</span></div>${bar(m.disk_percent, 80, 92)}
           </div>
           ${has(sat, "power") ? `<div class="section">
             <h4 style="margin-top:14px">Power &amp; throttling</h4>
             ${thr ? `<div class="chips">
-              <span class="chip ${thr.under_voltage_now ? "bad" : "ok"}">under-voltage ${thr.under_voltage_now ? "NOW" : "no"}</span>
-              <span class="chip ${thr.throttled_now ? "bad" : "ok"}">throttled ${thr.throttled_now ? "NOW" : "no"}</span>
+              <span class="chip ${thr.under_voltage_now ? "bad" : "ok"}"${hx(s, "under_voltage")}>under-voltage ${thr.under_voltage_now ? "NOW" : "no"}</span>
+              <span class="chip ${thr.throttled_now ? "bad" : "ok"}"${hx(s, "throttled")}>throttled ${thr.throttled_now ? "NOW" : "no"}</span>
               <span class="chip ${thr.soft_temp_limit_now ? "warn" : "ok"}">temp limit ${thr.soft_temp_limit_now ? "NOW" : "no"}</span>
               ${thr.under_voltage_occurred ? '<span class="chip warn">under-voltage since boot</span>' : ""}
               ${thr.throttled_occurred ? '<span class="chip warn">throttled since boot</span>' : ""}
@@ -392,11 +423,11 @@ function tabOverview(el, s) {
             <dt>OS</dt><dd>${esc(m.os)}</dd>
             <dt>Kernel</dt><dd>${esc(m.kernel)} (${esc(m.arch)})</dd>
             <dt>Hostname</dt><dd>${esc(m.hostname || sat.hostname)}</dd>
-            <dt>Addresses</dt><dd class="mono">${addrs || "–"}</dd>
-            <dt>Agent</dt><dd>${esc(m.agent_version || "–")}${state.controller && m.agent_version && m.agent_version !== state.controller.agent_version ? ` <span class="warn">(add-on ships ${esc(state.controller.agent_version)})</span>` : ""}</dd>
+            <dt>Addresses</dt><dd class="mono"${hx(s, "ip_address")}>${addrs || "–"}</dd>
+            <dt>Agent</dt><dd${hx(s, "agent")}>${esc(m.agent_version || "–")}${state.controller && m.agent_version && m.agent_version !== state.controller.agent_version ? ` <span class="warn">(add-on ships ${esc(state.controller.agent_version)})</span>` : ""}</dd>
             ${containerMode(sat) ? `<dt>Agent mode</dt><dd>Container (health, terminal and Docker only)</dd>` : ""}
-            ${has(sat, "updates") ? `<dt>Package updates</dt><dd>${upd.available ?? "–"} available · checked ${fmtAgo(upd.last_check)}${upd.reboot_required ? ' · <span class="warn">reboot required</span>' : ""}</dd>` : ""}
-            <dt>Docker</dt><dd>${(m.docker || {}).available ? `${m.docker.running}/${m.docker.total} containers running · ${m.docker.updates_available} image update(s) · checked ${fmtAgo(m.docker.last_check)}` : "not installed"}</dd>
+            ${has(sat, "updates") ? `<dt>Package updates</dt><dd${hx(s, "updates_available")}>${upd.available ?? "–"} available · checked ${fmtAgo(upd.last_check)}${upd.reboot_required ? ' · <span class="warn">reboot required</span>' : ""}</dd>` : ""}
+            <dt>Docker</dt><dd${hx(s, "containers_running")}>${(m.docker || {}).available ? `${m.docker.running}/${m.docker.total} containers running · ${m.docker.updates_available} image update(s) · checked ${fmtAgo(m.docker.last_check)}` : "not installed"}</dd>
             ${has(sat, "radios") ? `<dt>Radio bridges</dt><dd>${(m.serial || []).map((b) => `${esc(b.name || b.device)} → :${b.port} ${b.listening ? '<span class="ok">●</span>' : '<span class="bad">●</span>'}`).join("<br>") || "none"}</dd>` : ""}
           </dl>
           ${Object.keys(m.errors || {}).length ? `<p class="bad">${Object.entries(m.errors).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join("<br>")}</p>` : ""}

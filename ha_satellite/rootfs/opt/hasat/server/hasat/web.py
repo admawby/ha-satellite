@@ -90,6 +90,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
             "live": mgr.live,
             "poll_interval": mgr.current_interval(),
             "bulk": mgr.bulk.latest(),
+            "entities": await mgr.entities.entity_map(),
         })
 
     async def presence(request: web.Request) -> web.Response:

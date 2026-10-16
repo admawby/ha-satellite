@@ -184,6 +184,13 @@ appears as a **device** with these entities (otherwise they are published as pla
   bundled with the add-on. It appears under *Settings → Updates* when they differ, and
   shows *Installing…* while the device restarts on its new agent
 
+**History at a click.** In the Satellites page, values that have a Home Assistant entity
+are clickable and open Home Assistant's own pop-up with the history graph. Hover them to
+see the entity ID. That covers CPU temperature, CPU, memory, disk, load, uptime,
+package/container updates, power warnings, IP address, connection and agent version.
+Entities you renamed in Home Assistant are still found, because they are matched by their
+unique ID. If you open the add-on outside Home Assistant, a click opens HA's History page instead.
+
 **Agent updates are not outages.** When the add-on installs a new agent on a device (after
 an add-on update, *Reinstall agent*, or *Install* on the update entity), the device restarts
 its agent. For up to 3 minutes that restart is shown as **updating**: an amber pulsing dot in

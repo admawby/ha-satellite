@@ -15,6 +15,7 @@ from .agent_client import AgentClient, AgentError, build_agent_bundle
 from .config import AGENT_SRC_DIR, DATA_DIR, ENROLL_PORT, SUPERVISOR_TOKEN, SUPERVISOR_URL, Options
 from .bulk import BulkUpdates
 from .ha_bridge import HABridge
+from .ha_entities import EntityResolver
 from .pki import PKI
 from .store import Satellite, Store
 
@@ -49,6 +50,7 @@ class Manager:
         self._inflight: set[str] = set()
         self._published: dict[str, tuple[float, str]] = {}
         self.bulk = BulkUpdates(self)
+        self.entities = EntityResolver(self)
 
     # -------------------------------------------------------------- startup
     async def start(self) -> None:

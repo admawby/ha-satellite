@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+- **Click a value to see its history**: CPU temp, CPU, memory, disk, load, uptime, update
+  counts, Docker, power warnings, IP address, connection and agent version open Home Assistant's
+  own more-info dialog with the history graph (on the satellite tiles and the Overview tab)
+- Entity IDs are read from Home Assistant's entity registry by unique ID, so renamed entities
+  still work; disabled entities are ignored. The REST fallback uses the fixed `sensor.hasat_*` IDs
+
 ## 0.7.0
 
 - **Agent updates no longer look like outages**: while the add-on installs a new agent and the

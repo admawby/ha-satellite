@@ -46,6 +46,11 @@ with socket.socket() as _s:  # fake Docker Engine port, needed before the agent 
     _s.bind(("127.0.0.1", 0))
     DOCKER_PORT = _s.getsockname()[1]
 os.environ["HASAT_DOCKER_HOST"] = f"tcp://127.0.0.1:{DOCKER_PORT}"
+with socket.socket() as _s:  # fake Supervisor (HA websocket for entity registry lookups)
+    _s.bind(("127.0.0.1", 0))
+    SUPERVISOR_PORT = _s.getsockname()[1]
+os.environ["HASAT_SUPERVISOR_URL"] = f"http://127.0.0.1:{SUPERVISOR_PORT}"
+os.environ["SUPERVISOR_TOKEN"] = "test-supervisor-token"
 os.environ["HASAT_DOCKER_CONFIG"] = str(TMP / "no-docker-config.json")
 
 IS_POSIX = os.name == "posix"
@@ -74,6 +79,7 @@ import mode_cases  # noqa: E402
 import removal_cases  # noqa: E402
 import terminal_cases  # noqa: E402
 import live_bulk_cases  # noqa: E402
+import entities_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -281,6 +287,12 @@ async def main() -> None:
     async with aiohttp.ClientSession() as http:
         await docker_cases.run(check, http, ui, sat.id, agent, fake)
         await files_cases.run_docker_install(check, http, ui, sat.id, agent)
+
+    print("history links")
+    sup_runner = await serve(entities_cases.fake_supervisor(sat.id), SUPERVISOR_PORT)
+    async with aiohttp.ClientSession() as http:
+        await entities_cases.run(check, http, ui, mgr, sat)
+    await sup_runner.cleanup()
 
     print("live polling + bulk updates")
     async with aiohttp.ClientSession() as http:

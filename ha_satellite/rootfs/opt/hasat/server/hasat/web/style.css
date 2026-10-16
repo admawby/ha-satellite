@@ -134,3 +134,8 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 .bulkbar { margin-bottom: 14px; }
 .bulk-panel table td { border-bottom: none; padding: 4px 8px; }
 .tile-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+
+/* Values linked to a Home Assistant entity: click opens HA's history dialog */
+[data-entity] { cursor: pointer; transition: box-shadow .12s, background .12s; }
+.stat[data-entity]:hover { box-shadow: inset 0 0 0 1px var(--accent); }
+.chip[data-entity]:hover, dd[data-entity]:hover, span[data-entity]:hover, .row[data-entity]:hover { text-decoration: underline dotted; text-underline-offset: 3px; }

@@ -13,7 +13,7 @@ OPTIONS_FILE = DATA_DIR / "options.json"
 AGENT_SRC_DIR = Path(os.environ.get("HASAT_AGENT_DIR", "/opt/hasat/agent"))
 WEB_DIR = Path(__file__).parent / "web"
 
-SUPERVISOR_URL = "http://supervisor"
+SUPERVISOR_URL = os.environ.get("HASAT_SUPERVISOR_URL", "http://supervisor")
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
 INGRESS_PORT = 8099
