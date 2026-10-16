@@ -14,6 +14,7 @@ from aiohttp import WSMsgType, web
 from . import __version__
 from .agent_client import AgentError
 from .config import INGRESS_PROXY_IPS, WEB_DIR
+from .ha_history import RANGES, gather_safely
 
 if TYPE_CHECKING:
     from .manager import Manager
@@ -114,6 +115,13 @@ def build_ui_app(mgr: "Manager") -> web.Application:
         except RuntimeError as err:
             return web.json_response({"error": str(err)}, status=409)
         return web.json_response(job.to_api())
+
+    async def sat_history(request: web.Request) -> web.Response:
+        sat = sat_or_404(request)
+        rng = request.query.get("range", "24h")
+        if rng not in RANGES:
+            return web.json_response({"error": "unknown range"}, status=400)
+        return web.json_response(await gather_safely(mgr.history.for_satellite(sat, rng)))
 
     async def bulk_dismiss(request: web.Request) -> web.Response:
         body = await request.json()
@@ -286,6 +294,7 @@ def build_ui_app(mgr: "Manager") -> web.Application:
     app.router.add_delete("/api/sat/{sat_id}", delete_sat)
     app.router.add_post("/api/sat/{sat_id}/agent-update", agent_update)
     app.router.add_get("/api/sat/{sat_id}/terminal", terminal)
+    app.router.add_get("/api/sat/{sat_id}/history", sat_history)
     app.router.add_get("/api/sat/{sat_id}/files/download", file_download)
     app.router.add_post("/api/sat/{sat_id}/files/upload", file_upload)
     app.router.add_route("*", "/api/sat/{sat_id}/proxy/{path:.+}", proxy)

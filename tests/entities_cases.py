@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
+from urllib.parse import unquote
 from typing import Callable
 
 import aiohttp
@@ -12,7 +14,8 @@ from aiohttp import web
 
 TOKEN = "test-supervisor-token"
 EVENTS: list = []  # ("publish", topic, payload, retain) / ("delete", entity_id) / ("state", entity_id)
-BROKER = {"connected": True}  # flip to simulate HA's MQTT integration losing its broker
+BROKER = {"connected": True}
+HISTORY_CALLS: list = []  # flip to simulate HA's MQTT integration losing its broker
 
 
 def fake_supervisor(sat_id: str) -> web.Application:
@@ -37,6 +40,15 @@ def fake_supervisor(sat_id: str) -> web.Application:
                     {"unique_id": f"hasat_{sat_id}_load_1", "entity_id": "sensor.hasat_test_pi_load_1", "platform": "mqtt", "disabled_by": "user"},
                     {"unique_id": "something_else", "entity_id": "light.kitchen", "platform": "hue", "disabled_by": None},
                 ]})
+            elif req["type"] == "recorder/get_statistics_metadata":
+                await ws.send_json({"id": req["id"], "type": "result", "success": True, "result": [
+                    {"statistic_id": sid, "statistics_unit_of_measurement": "°F" if "temp" in sid else "%"}
+                    for sid in req["statistic_ids"]]})
+            elif req["type"] == "recorder/statistics_during_period":
+                start = datetime.fromisoformat(req["start_time"]).timestamp()
+                rows = {sid: [{"start": int((start + h * 3600) * 1000), "mean": 100.0 + (h % 24)}
+                              for h in range(0, 7 * 24)] for sid in req["statistic_ids"]}
+                await ws.send_json({"id": req["id"], "type": "result", "success": True, "result": rows})
             elif req["type"] == "subscribe_trigger":
                 await ws.send_json({"id": req["id"], "type": "result", "success": True, "result": None})
                 if req["trigger"]["topic"].endswith("/cmd"):
@@ -58,6 +70,21 @@ def fake_supervisor(sat_id: str) -> web.Application:
         EVENTS.append(("publish", body["topic"], body["payload"], body.get("retain")))
         return web.json_response([])
 
+    async def history(request):
+        ids = request.query["filter_entity_id"].split(",")
+        start = datetime.fromisoformat(unquote(request.match_info["start"])).timestamp()
+        out = []
+        for eid in ids:
+            unit = "°F" if "temp" in eid else "Mbit/s" if "net_" in eid else "%"
+            states = [{"entity_id": eid, "state": "120.5", "attributes": {"unit_of_measurement": unit},
+                       "last_changed": datetime.fromtimestamp(start - 60, timezone.utc).isoformat()}]
+            for i in range(1, 200):
+                v = "unavailable" if 90 <= i < 100 else str(100 + (i % 20))
+                states.append({"state": v, "last_changed": datetime.fromtimestamp(start + i * 400, timezone.utc).isoformat()})
+            out.append(states)
+        HISTORY_CALLS.append(ids)
+        return web.json_response(out)
+
     async def set_state(request):
         EVENTS.append(("state", request.match_info["entity_id"]))
         return web.json_response({}, status=201)
@@ -73,6 +100,7 @@ def fake_supervisor(sat_id: str) -> web.Application:
     app.router.add_post("/core/api/services/mqtt/publish", mqtt_publish)
     app.router.add_delete("/core/api/states/{entity_id}", delete_state)
     app.router.add_post("/core/api/states/{entity_id}", set_state)
+    app.router.add_get("/core/api/history/period/{start}", history)
     return app
 
 
@@ -198,3 +226,41 @@ async def run_ha_mqtt_failures(check: Callable[[bool, str], None], sat) -> None:
         BROKER["connected"] = True
         HABridge.HA_MQTT_RETRY = 300.0
         await bridge.stop()
+
+
+async def run_history(check: Callable[[bool, str], None], http: aiohttp.ClientSession, ui: str, mgr, sat) -> None:
+    """Graphs: history from HA (recorded states <= 24h, long-term statistics for 7d/30d)."""
+    mgr.options.publish_to_ha = True
+    saved_mqtt, saved_metrics = mgr.bridge._mqtt, sat.metrics
+    sat.metrics = dict(saved_metrics, gpus=[{"key": "nvidia0", "vendor": "nvidia", "name": "RTX", "temp": 40,
+                                             "mem_total": 1, "mem_percent": 10, "usage": 1}])
+    mgr.entities._registry, mgr.entities._fetched = {}, 10**12  # REST-mode ids, no registry lookups
+    mgr.history._cache.clear()
+    try:
+        async with http.get(f"{ui}/api/sat/{sat.id}/history?range=24h") as r:
+            d = await r.json()
+        groups = {g["id"]: g for g in d["groups"]}
+        check(d["source"] == "history" and set(groups) == {"temps", "gpu_mem", "disk", "net"},
+              f"history: 24h graphs from recorded states ({', '.join(groups)})")
+        temps = groups["temps"]
+        check([s["label"] for s in temps["series"]] == ["CPU", "GPU"] and temps["unit"] == "°F",
+              "history: temperature chart has CPU + GPU series in HA's unit (°F here)")
+        pts = temps["series"][0]["points"]
+        check(len(pts) <= 360 and any(p[1] is None for p in pts) and pts[-1][1] is not None,
+              f"history: downsampled ({len(pts)} points), gaps kept, last value held until now")
+        check([s["label"] for s in groups["net"]["series"]] == ["Download", "Upload"], "history: network chart download + upload")
+        calls = len(HISTORY_CALLS)
+        async with http.get(f"{ui}/api/sat/{sat.id}/history?range=24h") as r:
+            await r.json()
+        check(len(HISTORY_CALLS) == calls, "history: cached briefly (no HA query on every refresh)")
+
+        async with http.get(f"{ui}/api/sat/{sat.id}/history?range=7d") as r:
+            d7 = await r.json()
+        g7 = {g["id"]: g for g in d7["groups"]}
+        check(d7["source"] == "statistics" and g7["temps"]["unit"] == "°F" and len(g7["disk"]["series"][0]["points"]) > 100,
+              "history: 7-day graphs from HA long-term statistics")
+        async with http.get(f"{ui}/api/sat/{sat.id}/history?range=5y") as r:
+            check(r.status == 400, "history: unknown range rejected")
+    finally:
+        mgr.bridge._mqtt, sat.metrics = saved_mqtt, saved_metrics
+        mgr.options.publish_to_ha = False

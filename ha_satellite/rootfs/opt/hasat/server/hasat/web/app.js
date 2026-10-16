@@ -35,7 +35,10 @@ async function api(path, opts = {}) {
 }
 const satApi = (path, opts) => api(`api/sat/${state.current}/proxy/${path}`, opts);
 
-function clearTimers() { state.timers.forEach(clearInterval); state.timers = []; }
+function clearTimers() {
+  state.timers.forEach((t) => (t && t.disconnect ? t.disconnect() : clearInterval(t)));
+  state.timers = [];
+}
 function every(ms, fn) { state.timers.push(setInterval(fn, ms)); }
 
 // ------------------------------------------------------------------ live mode (presence)
@@ -140,6 +143,181 @@ document.addEventListener("click", (ev) => {
   ev.stopPropagation();
   openMoreInfo(el.dataset.entity);
 }, true);
+
+// ------------------------------------------------------------------ history graphs
+// Data comes from Home Assistant's database via the add-on (recorded states for short
+// ranges, long-term statistics for 7d/30d). Plain SVG, one unit per chart, crosshair +
+// tooltip, legend for 2+ series and a min/avg/max table (the table is also the
+// accessible view of the data).
+const HIST_RANGES = [["1h", "1 hour"], ["6h", "6 hours"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"]];
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function fmtVal(v, unit) {
+  if (v == null || Number.isNaN(v)) return "–";
+  const abs = Math.abs(v);
+  const n = abs >= 100 ? v.toFixed(0) : abs >= 10 ? v.toFixed(1) : v.toFixed(2);
+  return unit ? `${n} ${unit}` : n;
+}
+
+function niceTicks(min, max, count = 4) {
+  if (min === max) { min -= 1; max += 1; }
+  const raw = (max - min) / count;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || 10 * mag;
+  const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step;
+  const ticks = [];
+  for (let t = lo; t <= hi + step / 2; t += step) ticks.push(+t.toFixed(10));
+  const decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+  return { lo, hi, ticks, decimals };
+}
+
+function timeLabel(ms, rangeKey) {
+  const d = new Date(ms);
+  if (rangeKey === "7d" || rangeKey === "30d") return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function svgEl(name, attrs, parent) {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  if (parent) parent.appendChild(el);
+  return el;
+}
+
+function drawLineChart(box, group, data) {
+  box.textContent = "";
+  const W = Math.max(260, box.clientWidth), H = 170, M = { l: 46, r: 10, t: 10, b: 24 };
+  const series = group.series.map((s, i) => ({ ...s, color: `var(--series-${(i % 4) + 1})` }));
+  const values = series.flatMap((s) => s.points.map((p) => p[1]).filter((v) => v != null));
+  if (!values.length) {
+    box.innerHTML = '<p class="muted" style="margin:24px 0">No history recorded for this range yet.</p>';
+    return;
+  }
+  const unit = group.unit || "";
+  let lo, hi;
+  if (unit === "%") { lo = 0; hi = 100; } // utilisation: always the full scale
+  else if (group.id === "net") { lo = 0; hi = Math.max(...values) * 1.1 || 1; }
+  else { const mn = Math.min(...values), mx = Math.max(...values), pad = (mx - mn) * 0.15 || 2; lo = mn - pad; hi = mx + pad; }
+  const ny = niceTicks(lo, hi);
+  const x = (t) => M.l + ((t - data.start) / (data.end - data.start)) * (W - M.l - M.r);
+  const y = (v) => M.t + (1 - (v - ny.lo) / (ny.hi - ny.lo)) * (H - M.t - M.b);
+
+  const svg = svgEl("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": `${group.title} over the selected range` }, box);
+  for (const t of ny.ticks) {
+    svgEl("line", { x1: M.l, x2: W - M.r, y1: y(t), y2: y(t), class: "grid" }, svg);
+    svgEl("text", { x: M.l - 6, y: y(t) + 4, class: "tick", "text-anchor": "end" }, svg).textContent = t.toFixed(ny.decimals);
+  }
+  const nx = Math.max(2, Math.min(6, Math.floor((W - M.l - M.r) / 90)));
+  for (let i = 0; i <= nx; i++) {
+    const t = data.start + ((data.end - data.start) * i) / nx;
+    svgEl("text", { x: x(t), y: H - 6, class: "tick", "text-anchor": i === 0 ? "start" : i === nx ? "end" : "middle" }, svg)
+      .textContent = timeLabel(t, data.range);
+  }
+  for (const s of series) {
+    let d = "", pen = false;
+    for (const [t, v] of s.points) {
+      if (v == null) { pen = false; continue; } // gap: device offline / sensor unavailable
+      d += `${pen ? "L" : "M"}${x(t).toFixed(1)},${y(v).toFixed(1)}`;
+      pen = true;
+    }
+    svgEl("path", { d, class: "line", style: `stroke:${s.color}` }, svg);
+  }
+
+  // Crosshair + tooltip listing every series at the hovered time.
+  const cross = svgEl("line", { y1: M.t, y2: H - M.b, class: "cross", visibility: "hidden" }, svg);
+  const dots = series.map((s) => svgEl("circle", { r: 4, class: "dot-mark", style: `fill:${s.color}`, visibility: "hidden" }, svg));
+  const tip = document.createElement("div");
+  tip.className = "chart-tip";
+  tip.hidden = true;
+  box.appendChild(tip);
+  const nearest = (pts, t) => {
+    let best = null;
+    for (const p of pts) if (p[1] != null && (!best || Math.abs(p[0] - t) < Math.abs(best[0] - t))) best = p;
+    return best;
+  };
+  const hit = svgEl("rect", { x: M.l, y: M.t, width: W - M.l - M.r, height: H - M.t - M.b, fill: "transparent" }, svg);
+  hit.addEventListener("pointermove", (ev) => {
+    const rect = svg.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const t = data.start + ((px - M.l) / (W - M.l - M.r)) * (data.end - data.start);
+    cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
+    tip.textContent = "";
+    const head = document.createElement("div");
+    head.className = "muted";
+    head.textContent = new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    tip.appendChild(head);
+    series.forEach((s, i) => {
+      const p = nearest(s.points, t);
+      if (!p) { dots[i].setAttribute("visibility", "hidden"); return; }
+      dots[i].setAttribute("cx", x(p[0])); dots[i].setAttribute("cy", y(p[1])); dots[i].setAttribute("visibility", "visible");
+      const row = document.createElement("div");
+      const sw = document.createElement("span"); sw.className = "swatch"; sw.style.background = s.color;
+      const val = document.createElement("b"); val.textContent = fmtVal(p[1], s.unit || unit);
+      row.append(sw, val, document.createTextNode(` ${s.label}`));
+      tip.appendChild(row);
+    });
+    tip.hidden = false;
+    const left = Math.min(px + 12, W - tip.offsetWidth - 4);
+    tip.style.left = `${Math.max(0, left)}px`;
+    tip.style.top = `${M.t}px`;
+  });
+  hit.addEventListener("pointerleave", () => {
+    cross.setAttribute("visibility", "hidden"); dots.forEach((dd) => dd.setAttribute("visibility", "hidden")); tip.hidden = true;
+  });
+}
+
+function historyStats(points) {
+  const vals = points.map((p) => p[1]).filter((v) => v != null);
+  if (!vals.length) return null;
+  return { now: vals[vals.length - 1], min: Math.min(...vals), max: Math.max(...vals), avg: vals.reduce((a, b) => a + b, 0) / vals.length };
+}
+
+async function renderHistory(el, s) {
+  const range = state.histRange || "24h";
+  if (el._ro) { el._ro.disconnect(); el._ro = null; }
+  el.innerHTML = `
+    <div class="card section">
+      <div class="row" style="margin-bottom:10px">
+        <h4 style="margin:0">History</h4><span class="muted" id="hist-src"></span><span class="spacer"></span>
+        <div class="seg">${HIST_RANGES.map(([k, l]) => `<button class="btn small ${k === range ? "primary" : ""}" data-range="${k}" title="${l}">${k}</button>`).join("")}</div>
+      </div>
+      <div id="hist-body" class="muted">Loading history from Home Assistant…</div>
+    </div>`;
+  el.querySelectorAll("[data-range]").forEach((b) => (b.onclick = () => { state.histRange = b.dataset.range; renderHistory(el, s); }));
+  let data;
+  try { data = await api(`api/sat/${s.id}/history?range=${range}`); }
+  catch (e) { $("#hist-body").textContent = e.message; return; }
+  const body = $("#hist-body");
+  if (!body) return;
+  if (data.error || data.note || !data.groups.length) {
+    body.textContent = data.error ? `Could not read history from Home Assistant: ${data.error}` : (data.note || "No history available.");
+    return;
+  }
+  $("#hist-src").textContent = data.source === "statistics" ? "· hourly averages from HA long-term statistics" : "· recorded values from Home Assistant";
+  body.className = "hist-grid";
+  body.innerHTML = data.groups.map((g, gi) => {
+    const many = g.series.length > 1;
+    const rows = g.series.map((se, i) => {
+      const st = historyStats(se.points);
+      const u = se.unit || g.unit || "";
+      return `<tr><td><span class="swatch" style="background:var(--series-${(i % 4) + 1})"></span><a href="#" data-entity="${esc(se.entity_id)}" title="Open ${esc(se.entity_id)} in Home Assistant">${esc(se.label)}</a></td>
+        <td>${st ? fmtVal(st.now, u) : "–"}</td><td>${st ? fmtVal(st.min, u) : "–"}</td><td>${st ? fmtVal(st.avg, u) : "–"}</td><td>${st ? fmtVal(st.max, u) : "–"}</td></tr>`;
+    }).join("");
+    return `<div class="hist-chart">
+      <div class="row"><b>${esc(g.title)}</b>${g.unit ? `<span class="muted">${esc(g.unit)}</span>` : ""}
+        ${many ? `<span class="spacer"></span><span class="legend">${g.series.map((se, i) => `<span><span class="swatch" style="background:var(--series-${(i % 4) + 1})"></span>${esc(se.label)}</span>`).join("")}</span>` : ""}</div>
+      <div class="chart-box" data-g="${gi}"></div>
+      <table class="hist-table"><thead><tr><th></th><th>Now</th><th>Min</th><th>Avg</th><th>Max</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>`;
+  }).join("");
+  const draw = () => body.querySelectorAll(".chart-box").forEach((box) => drawLineChart(box, data.groups[+box.dataset.g], data));
+  draw();
+  const ro = new ResizeObserver(() => draw());
+  ro.observe(body);
+  el._ro = ro;
+  state.timers.push({ disconnect: () => ro.disconnect() });
+}
 
 // ------------------------------------------------------------------ network
 // Rates arrive in bytes/s; shown in bits/s like routers and speed tests do.
@@ -519,7 +697,11 @@ function renderDetail() {
 
 function bar(v, warn, bad) { return `<div class="bar"><i class="${level(v, warn, bad)}" style="width:${Math.min(100, v || 0)}%"></i></div>`; }
 
-function tabOverview(el, s) {
+function tabOverview(outer, s) {
+  // Live details (redrawn every few seconds) and history charts (own refresh) live in
+  // separate containers, so a hover on a chart is not wiped by the live refresh.
+  outer.innerHTML = '<div id="ov-top"></div><div id="ov-history"></div><div id="ov-bottom"></div>';
+  const el = $("#ov-top"), bottom = $("#ov-bottom");
   const draw = () => {
     const sat = currentSat(); const m = sat.metrics || {}; const thr = m.throttled; const upd = m.updates || {};
     const addrs = Object.entries(m.addresses || {}).map(([k, v]) => `${esc(k)}: ${v.map(esc).join(", ")}`).join("<br>");
@@ -568,12 +750,17 @@ function tabOverview(el, s) {
             ${has(sat, "power") ? '<button class="btn" id="o-reboot">Reboot</button>' : ""}
           </div>
         </div>
-      </div>${netCard(sat)}${gpuCard(sat)}`;
+      </div>`;
+    bottom.innerHTML = `${netCard(sat)}${gpuCard(sat)}`;
     on("#o-term", () => go(state.current, "terminal"));
     on("#o-reboot", () => reboot());
   };
   draw();
+  renderHistory($("#ov-history"), s);
   everyLive(async () => { await refresh().catch(() => {}); if (state.tab === "overview" && currentSat()) draw(); });
+  every(60000, () => {  // new points for short ranges; long ranges are hourly anyway
+    if (state.tab === "overview" && ["1h", "6h", "24h"].includes(state.histRange || "24h") && $("#ov-history")) renderHistory($("#ov-history"), s);
+  });
 }
 
 async function reboot() {

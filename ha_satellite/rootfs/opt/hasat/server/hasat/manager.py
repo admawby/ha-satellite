@@ -16,6 +16,7 @@ from .config import AGENT_SRC_DIR, DATA_DIR, ENROLL_PORT, SUPERVISOR_TOKEN, SUPE
 from .bulk import BulkUpdates
 from .ha_bridge import HABridge
 from .ha_entities import EntityResolver
+from .ha_history import HistoryReader
 from . import reachability
 from .pki import PKI
 from .store import Satellite, Store
@@ -53,6 +54,7 @@ class Manager:
         self._published: dict[str, tuple[float, str]] = {}
         self.bulk = BulkUpdates(self)
         self.entities = EntityResolver(self)
+        self.history = HistoryReader(self)
 
     # -------------------------------------------------------------- startup
     async def start(self) -> None:

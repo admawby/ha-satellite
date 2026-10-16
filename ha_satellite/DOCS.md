@@ -222,6 +222,15 @@ package/container updates, power warnings, IP address, connection and agent vers
 Entities you renamed in Home Assistant are still found, because they are matched by their
 unique ID. If you open the add-on outside Home Assistant, a click opens HA's History page instead.
 
+**History graphs.** The Overview tab shows line charts of **temperatures** (CPU and each GPU),
+**graphics memory**, **disk usage** and **network** download/upload over the last 1 hour,
+6 hours, 24 hours, 7 days or 30 days. The data comes from Home Assistant's own database: the
+recorded values for up to 24 hours, and HA's hourly long-term statistics for 7 and 30 days, which
+HA keeps far longer than raw history. Hover a chart to read exact values; the table under each
+chart shows now/min/average/max, and each name opens the entity in Home Assistant. Gaps in a line
+mean the device or sensor was unavailable. Graphs need *Publish to Home Assistant* enabled, and
+values are shown in Home Assistant's units (e.g. °F if your HA uses imperial units).
+
 **Device offline or agent broken?** When a satellite's agent does not answer, the add-on
 pings the device (falling back to a TCP probe if ICMP is not allowed) to tell the two apart:
 

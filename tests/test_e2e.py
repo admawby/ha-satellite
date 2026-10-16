@@ -302,6 +302,7 @@ async def main() -> None:
     sup_runner = await serve(entities_cases.fake_supervisor(sat.id), SUPERVISOR_PORT)
     async with aiohttp.ClientSession() as http:
         await entities_cases.run(check, http, ui, mgr, sat)
+        await entities_cases.run_history(check, http, ui, mgr, sat)
     await entities_cases.run_ha_mqtt(check, sat)
     await entities_cases.run_ha_mqtt_failures(check, sat)
     await sup_runner.cleanup()

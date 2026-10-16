@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.0
+
+- **History graphs** on the Overview tab: temperatures (CPU + GPUs), graphics memory, disk usage
+  and network download/upload, for 1h / 6h / 24h / 7d / 30d
+- Data comes from Home Assistant's database: recorded states up to 24 hours, hourly long-term
+  statistics for 7 and 30 days; downsampled in the add-on, with gaps where a device was offline
+- Crosshair tooltip with every series, legends, and a now/min/avg/max table per chart; colours
+  validated for colour-blind readers in light and dark mode
+
 ## 0.11.0
 
 - **Offline vs. broken agent**: when a satellite's agent does not answer, the add-on pings the device
