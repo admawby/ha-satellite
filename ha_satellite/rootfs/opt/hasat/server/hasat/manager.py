@@ -13,6 +13,7 @@ import aiohttp
 from .launch import Launcher
 from .agent_client import AgentClient, AgentError, build_agent_bundle
 from .config import AGENT_SRC_DIR, DATA_DIR, ENROLL_PORT, SUPERVISOR_TOKEN, SUPERVISOR_URL, Options
+from .bulk import BulkUpdates
 from .ha_bridge import HABridge
 from .pki import PKI
 from .store import Satellite, Store
@@ -41,6 +42,12 @@ class Manager:
         self.enroll_port = ENROLL_PORT
         self._poll_task: asyncio.Task | None = None
         self._updating: set[str] = set()
+        # Live mode: browser tabs that are actively viewing the UI hold a short lease.
+        self._viewers: dict[str, float] = {}
+        self._wake = asyncio.Event()
+        self._inflight: set[str] = set()
+        self._published: dict[str, tuple[float, bool]] = {}
+        self.bulk = BulkUpdates(self)
 
     # -------------------------------------------------------------- startup
     async def start(self) -> None:
@@ -130,12 +137,58 @@ class Manager:
         asyncio.get_running_loop().call_later(5, lambda: asyncio.create_task(self.poll_one(sat.id)))
 
     # -------------------------------------------------------------- polling
+    LIVE_INTERVAL = 3.0   # seconds between polls while someone is actively using the UI
+    VIEWER_LEASE = 15.0   # a browser heartbeat keeps live mode on for this long
+
+    def set_viewer(self, client_id: str, active: bool) -> None:
+        """Called by the UI: active tabs renew a lease; hidden/idle/closed tabs drop it."""
+        client_id = client_id[:64] or "anonymous"
+        was_live = self.live
+        if active:
+            self._viewers[client_id] = time.monotonic() + self.VIEWER_LEASE
+        else:
+            self._viewers.pop(client_id, None)
+        if self.live and not was_live:
+            _LOGGER.debug("Live polling on (%d active viewer(s))", len(self._viewers))
+            self._wake.set()  # switch to fast polling immediately
+
+    @property
+    def live(self) -> bool:
+        now = time.monotonic()
+        for cid in [c for c, exp in self._viewers.items() if exp < now]:
+            del self._viewers[cid]
+        return bool(self._viewers)
+
+    def current_interval(self) -> float:
+        return min(self.LIVE_INTERVAL, self.options.poll_interval) if self.live else float(self.options.poll_interval)
+
     async def _poll_loop(self) -> None:
+        last_poll = float("-inf")
         while True:
-            sats = list(self.store.satellites.values())
-            if sats:
-                await asyncio.gather(*(self._poll(s) for s in sats), return_exceptions=True)
-            await asyncio.sleep(self.options.poll_interval)
+            # The next poll is due one interval after the last one; the interval is
+            # re-evaluated on every wake-up, so live mode starts and stops immediately.
+            if time.monotonic() - last_poll >= self.current_interval():
+                last_poll = time.monotonic()
+                # Satellites are polled independently: a slow or unreachable one is skipped
+                # while its previous poll is still running instead of delaying the others.
+                for sat in list(self.store.satellites.values()):
+                    if sat.id not in self._inflight:
+                        self._inflight.add(sat.id)
+                        asyncio.create_task(self._poll_tracked(sat))
+            self._wake.clear()
+            remaining = max(0.05, last_poll + self.current_interval() - time.monotonic())
+            try:
+                await asyncio.wait_for(self._wake.wait(), min(remaining, self.LIVE_INTERVAL))
+            except asyncio.TimeoutError:
+                pass
+
+    async def _poll_tracked(self, sat: Satellite) -> None:
+        try:
+            await self._poll(sat)
+        except Exception:  # noqa: BLE001 - keep polling other satellites
+            _LOGGER.exception("Polling %s failed", sat.name)
+        finally:
+            self._inflight.discard(sat.id)
 
     async def poll_one(self, sat_id: str) -> None:
         sat = self.store.satellites.get(sat_id)
@@ -144,7 +197,8 @@ class Manager:
 
     async def _poll(self, sat: Satellite) -> None:
         try:
-            sat.metrics = await self.client.request(sat, "GET", "/api/status", timeout=20)
+            timeout = 8 if self.live else 20
+            sat.metrics = await self.client.request(sat, "GET", "/api/status", timeout=timeout)
             if not sat.online:
                 _LOGGER.info("Satellite %s is online", sat.name)
             sat.online, sat.last_seen, sat.last_error = True, time.time(), ""
@@ -156,7 +210,12 @@ class Manager:
             if sat.online:
                 _LOGGER.warning("Satellite %s went offline: %s", sat.name, err)
             sat.online, sat.last_error = False, str(err)
-        await self.bridge.publish(sat)
+        # Home Assistant gets updates at the normal pace even while the UI polls fast,
+        # so live mode does not flood HA's history database. State changes go out at once.
+        last_time, last_online = self._published.get(sat.id, (0.0, not sat.online))
+        if sat.online != last_online or time.monotonic() - last_time >= self.options.poll_interval - 0.5:
+            self._published[sat.id] = (time.monotonic(), sat.online)
+            await self.bridge.publish(sat)
         if sat.online and self.options.auto_update_agents:
             current = sat.metrics.get("agent_version")
             if current and current != self.agent_version and sat.id not in self._updating:

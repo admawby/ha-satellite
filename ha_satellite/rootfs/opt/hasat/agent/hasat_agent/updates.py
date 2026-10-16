@@ -59,9 +59,13 @@ class Updater:
 
     async def _run(self, *cmd: str, timeout: int = 1800) -> int:
         self.state["log"].append(f"$ {' '.join(cmd)}")
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=APT_ENV
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=APT_ENV
+            )
+        except OSError as err:  # e.g. apt missing; report instead of leaving "running" stuck
+            self.state["log"].append(f"!! cannot run {cmd[0]}: {err}")
+            return 127
 
         async def pump() -> None:
             assert proc.stdout is not None
@@ -78,10 +82,13 @@ class Updater:
         return proc.returncode or 0
 
     async def _list_upgradable(self) -> List[Dict[str, str]]:
-        proc = await asyncio.create_subprocess_exec(
-            "apt", "list", "--upgradable", stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL, env=APT_ENV,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "apt", "list", "--upgradable", stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL, env=APT_ENV,
+            )
+        except OSError:
+            return []
         out, _ = await proc.communicate()
         pkgs = []
         for line in out.decode(errors="replace").splitlines():

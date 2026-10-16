@@ -139,6 +139,34 @@ Guard rails: paths must be absolute, nothing under `/proc`, `/sys` or `/dev` can
 be changed, and top-level system folders (`/`, `/etc`, `/usr`, `/home`, ...) cannot
 be deleted or renamed. Their contents can be, so be careful.
 
+## Live updates and bulk updates
+
+**Live polling.** While the Satellites page is open in a visible tab and you have
+used the mouse, keyboard or touch screen in the last 3 minutes, the add-on polls
+every satellite every **3 seconds**, and the page refreshes at the same pace. As
+soon as the tab is hidden or closed, or you have been away for 3 minutes, it goes
+back to the normal `poll_interval` (30 s by default). The header of the satellite
+list shows which mode is active. Home Assistant sensors keep updating at the normal
+interval in both modes, so live mode does not fill up HA's history database.
+
+**Bulk updates** (top of the satellite list):
+
+| Button | What it does |
+| --- | --- |
+| **Update All** | On every satellite: install package updates, then update Docker images |
+| **Update All Packages** | Install package updates on every satellite that supports them |
+| **Update All Docker Images** | Pull new images and recreate the containers that have updates, on every satellite with Docker |
+
+Each satellite tile also has **Update Packages** and **Update Docker Images**
+buttons for just that device, showing how many updates are waiting.
+
+Satellites are updated in parallel. On each one, packages finish before Docker
+images start, so an upgrade of Docker itself can't interrupt an image update. The
+job runs inside the add-on, so it keeps going if you close the page. Progress per
+device is shown above the tiles. Offline satellites are skipped, as are package
+updates on Synology. Containers you excluded or labelled `hasat.update=false` are
+left alone.
+
 ## Home Assistant entities
 
 If the MQTT integration is set up (e.g. the Mosquitto add-on), every satellite

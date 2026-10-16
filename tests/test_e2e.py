@@ -72,6 +72,7 @@ import files_cases  # noqa: E402
 import mode_cases  # noqa: E402
 import removal_cases  # noqa: E402
 import terminal_cases  # noqa: E402
+import live_bulk_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -279,6 +280,11 @@ async def main() -> None:
     async with aiohttp.ClientSession() as http:
         await docker_cases.run(check, http, ui, sat.id, agent, fake)
         await files_cases.run_docker_install(check, http, ui, sat.id, agent)
+
+    print("live polling + bulk updates")
+    async with aiohttp.ClientSession() as http:
+        await live_bulk_cases.run_live(check, http, ui, mgr, sat)
+        await live_bulk_cases.run_bulk(check, http, ui, mgr, sat, agent, fake)
 
     await mgr.poll_one(sat.id)
     d = sat.metrics["docker"]

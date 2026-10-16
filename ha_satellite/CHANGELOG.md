@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- **Live polling**: while the page is visible and you are using it, satellites are polled every
+  3 s (and the page refreshes at that pace); hidden/closed tabs or 3 minutes without input fall
+  back to the normal interval. Home Assistant sensors keep the normal pace
+- **Update All**, **Update All Packages** and **Update All Docker Images** buttons in the
+  satellite list, plus **Update Packages** / **Update Docker Images** on each tile, with live
+  per-device progress. Jobs run in the add-on and continue when the page is closed
+- Satellites are polled independently, so one unreachable device no longer delays the others
+- Package updates now report a failure instead of staying "running" if apt cannot start
+
 ## 0.5.1
 
 - Terminal: fail fast with a clear message when the satellite cannot be reached

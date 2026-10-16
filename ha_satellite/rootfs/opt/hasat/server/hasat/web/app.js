@@ -37,6 +37,51 @@ const satApi = (path, opts) => api(`api/sat/${state.current}/proxy/${path}`, opt
 
 function clearTimers() { state.timers.forEach(clearInterval); state.timers = []; }
 function every(ms, fn) { state.timers.push(setInterval(fn, ms)); }
+
+// ------------------------------------------------------------------ live mode (presence)
+// While this page is visible and you have used mouse/keyboard/touch in the last few
+// minutes, the add-on polls satellites every 3 s. Otherwise (tab hidden or closed,
+// away from the computer) it falls back to the normal interval.
+const CLIENT_ID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Math.random()).slice(2);
+const IDLE_MS = 3 * 60 * 1000;
+let lastInput = Date.now();
+let presenceSent = null;
+
+const isActive = () => document.visibilityState === "visible" && Date.now() - lastInput < IDLE_MS;
+
+function sendPresence() {
+  const active = isActive();
+  // Renew the lease every few seconds while active; announce "inactive" once.
+  if (!active && presenceSent === false) return;
+  presenceSent = active;
+  fetch(BASE + "api/presence", { method: "POST", body: JSON.stringify({ client: CLIENT_ID, active }), keepalive: true })
+    .then((r) => r.json()).then((d) => { state.live = d.live; state.pollInterval = d.poll_interval; }).catch(() => {});
+}
+
+["pointerdown", "pointermove", "keydown", "wheel", "touchstart", "scroll"].forEach((ev) =>
+  addEventListener(ev, () => {
+    const wasActive = isActive();
+    lastInput = Date.now();
+    if (!wasActive) sendPresence();  // coming back: switch to live polling right away
+  }, { passive: true, capture: true }));
+document.addEventListener("visibilitychange", sendPresence);
+addEventListener("pagehide", () => {
+  const body = JSON.stringify({ client: CLIENT_ID, active: false });
+  if (!(navigator.sendBeacon && navigator.sendBeacon(BASE + "api/presence", body))) {
+    fetch(BASE + "api/presence", { method: "POST", body, keepalive: true }).catch(() => {});
+  }
+});
+setInterval(sendPresence, 5000);
+
+// Refresh a view every 3 s while active, every 30 s otherwise.
+function everyLive(fn) {
+  let last = Date.now();
+  state.timers.push(setInterval(() => {
+    const period = isActive() ? 3000 : 30000;
+    if (Date.now() - last >= period) { last = Date.now(); fn(); }
+  }, 1000));
+}
+
 function closeTerminal() {
   if (termSocket) { termSocket.onclose = null; termSocket.close(); termSocket = null; }
   if (termResize) { termResize.disconnect(); termResize = null; }
@@ -47,6 +92,9 @@ async function refresh() {
   const data = await api("api/state");
   state.controller = data.controller;
   state.satellites = data.satellites;
+  state.live = data.live;
+  state.pollInterval = data.poll_interval;
+  state.bulk = data.bulk;
 }
 const currentSat = () => state.satellites.find((s) => s.id === state.current);
 
@@ -63,6 +111,12 @@ async function render() {
 }
 
 // ------------------------------------------------------------------ list view
+const STEP_LABEL = { packages: "Packages", docker: "Docker images" };
+const bulkRunFor = (satId) => {
+  const b = state.bulk;
+  return b && b.running ? (b.satellites || []).find((r) => r.sat_id === satId && r.state === "running") : null;
+};
+
 function satCard(s) {
   const m = s.metrics || {}, upd = m.updates || {}, thr = m.throttled || {};
   const chips = [];
@@ -76,6 +130,16 @@ function satCard(s) {
   if (dk.available) chips.push(`<span class="chip ${dk.updates_available ? "warn" : ""}">Docker ${dk.running}/${dk.total}${dk.updates_available ? ` · ${dk.updates_available} image update${dk.updates_available > 1 ? "s" : ""}` : ""}</span>`);
   if (bridges.length) chips.push(`<span class="chip ok">${bridges.length} radio bridge${bridges.length > 1 ? "s" : ""}</span>`);
   if (m.agent_version && state.controller && m.agent_version !== state.controller.agent_version) chips.push(`<span class="chip">agent ${esc(m.agent_version)}</span>`);
+
+  const run = bulkRunFor(s.id);
+  const busy = !!run || !s.online;
+  const canPkgs = has(s, "updates") && s.online;
+  const canDocker = has(s, "docker") && dk.available && s.online;
+  const actions = [
+    canPkgs ? `<button class="btn small" data-bulk="packages" data-sat="${esc(s.id)}" ${busy ? "disabled" : ""}>Update Packages${upd.available ? ` (${upd.available})` : ""}</button>` : "",
+    canDocker ? `<button class="btn small" data-bulk="docker" data-sat="${esc(s.id)}" ${busy ? "disabled" : ""}>Update Docker Images${dk.updates_available ? ` (${dk.updates_available})` : ""}</button>` : "",
+  ].join("");
+  const progress = run ? run.steps.filter((st) => st.state === "running").map((st) => `<span class="chip warn">updating ${STEP_LABEL[st.kind].toLowerCase()}…</span>`).join("") : "";
   return `
   <div class="card sat-card" data-id="${esc(s.id)}">
     <div class="sat-head"><span class="dot ${s.online ? "on" : ""}"></span><h3>${esc(s.name)}</h3><span class="muted mono">${esc(s.host)}</span></div>
@@ -86,11 +150,39 @@ function satCard(s) {
       <div class="stat"><div class="v ${level(m.mem_percent, 80, 92)}">${fmtPct(m.mem_percent)}</div><div class="l">Memory</div></div>
       <div class="stat"><div class="v ${level(m.disk_percent, 80, 92)}">${fmtPct(m.disk_percent)}</div><div class="l">Disk</div></div>
     </div>
-    <div class="chips">${chips.join("")}<span class="chip">up ${fmtDur(m.uptime)}</span></div>
+    <div class="chips">${progress}${chips.join("")}<span class="chip">up ${fmtDur(m.uptime)}</span></div>
+    ${actions ? `<div class="tile-actions">${actions}</div>` : ""}
   </div>`;
 }
 
-function renderList() {
+function bulkPanel() {
+  const b = state.bulk;
+  if (!b || !b.satellites) return "";
+  const recent = b.running || (b.finished && Date.now() / 1000 - b.finished < 15 * 60);
+  if (!recent || state.dismissedBulk === b.id) return "";
+  const cls = { running: "warn", waiting: "", done: "ok", failed: "bad", skipped: "" };
+  const icon = { running: "…", waiting: "·", done: "✓", failed: "✕", skipped: "–" };
+  const single = b.satellites.length === 1 && state.satellites.length > 1;
+  const title = single
+    ? `${{ all: "Update everything", packages: "Update packages", docker: "Update Docker images" }[b.scope] || "Update"} on ${b.satellites[0].name}`
+    : ({ all: "Update all", packages: "Update all packages", docker: "Update all Docker images" }[b.scope] || "Update");
+  return `
+    <div class="card section bulk-panel">
+      <div class="row" style="margin-bottom:6px">
+        <h4 style="margin:0">${b.running ? "Updating" : "Finished"}: ${esc(title)}</h4>
+        <span class="muted">${b.running ? `started ${fmtAgo(b.started)}` : `finished ${fmtAgo(b.finished)}`}</span>
+        <span class="spacer"></span>
+        ${b.running ? "" : '<button class="btn small" id="bulk-dismiss">Dismiss</button>'}
+      </div>
+      <table><tbody>${b.satellites.map((r) => `<tr>
+        <td style="white-space:nowrap"><b>${esc(r.name)}</b></td>
+        <td>${r.steps.map((st) => `<div><span class="chip ${cls[st.state] || ""}">${icon[st.state] || ""} ${STEP_LABEL[st.kind]}: ${esc(st.state)}</span>
+          <span class="muted" style="font-size:12px">${esc(st.detail || "")}</span></div>`).join("")}</td></tr>`).join("")}
+      </tbody></table>
+    </div>`;
+}
+
+function drawList() {
   if (!state.satellites.length) {
     view.innerHTML = `
       <div class="card empty">
@@ -99,16 +191,47 @@ function renderList() {
         <button class="btn primary" id="empty-add">Launch satellite</button>
       </div>`;
     $("#empty-add").onclick = openAdd;
-  } else {
-    view.innerHTML = `<div class="grid">${state.satellites.map(satCard).join("")}</div>`;
-    view.querySelectorAll(".sat-card").forEach((el) => (el.onclick = () => go(el.dataset.id)));
+    return;
   }
-  every(10000, async () => { if (!state.current) { await refresh().catch(() => {}); if (!state.current && !modal.open) renderListQuiet(); } });
-}
-function renderListQuiet() {
-  if (!state.satellites.length) return;
-  view.innerHTML = `<div class="grid">${state.satellites.map(satCard).join("")}</div>`;
+  const running = !!(state.bulk && state.bulk.running);
+  const online = state.satellites.filter((s) => s.online).length;
+  view.innerHTML = `
+    <div class="row bulkbar">
+      <span class="muted">${state.satellites.length} satellite${state.satellites.length === 1 ? "" : "s"} · ${online} online ·
+        <span title="Devices are polled every 3 s while you are using this page, otherwise at the normal interval">${state.live ? "live, updating every 3 s" : `updating every ${Math.round(state.pollInterval || 30)} s`}</span></span>
+      <span class="spacer"></span>
+      <button class="btn" data-bulk-all="packages" ${running ? "disabled" : ""}>Update All Packages</button>
+      <button class="btn" data-bulk-all="docker" ${running ? "disabled" : ""}>Update All Docker Images</button>
+      <button class="btn primary" data-bulk-all="all" ${running ? "disabled" : ""}>Update All</button>
+    </div>
+    ${bulkPanel()}
+    <div class="grid">${state.satellites.map(satCard).join("")}</div>`;
   view.querySelectorAll(".sat-card").forEach((el) => (el.onclick = () => go(el.dataset.id)));
+  view.querySelectorAll("[data-bulk]").forEach((b) => (b.onclick = (ev) => { ev.stopPropagation(); startBulk(b.dataset.bulk, [b.dataset.sat]); }));
+  view.querySelectorAll("[data-bulk-all]").forEach((b) => (b.onclick = () => startBulk(b.dataset.bulkAll, null)));
+  const dismiss = $("#bulk-dismiss");
+  if (dismiss) dismiss.onclick = () => { state.dismissedBulk = state.bulk.id; drawList(); };
+}
+
+async function startBulk(scope, satIds) {
+  const sats = state.satellites.filter((s) => !satIds || satIds.includes(s.id));
+  const what = { all: "install package updates and then update Docker images", packages: "install all package updates", docker: "pull new Docker images and recreate the containers that have updates" }[scope];
+  const who = satIds ? sats.map((s) => s.name).join(", ") : `all ${sats.length} satellites`;
+  const notes = [];
+  if (scope !== "docker") notes.push("Satellites without package updates (e.g. Synology) are skipped for packages.");
+  if (scope !== "packages") notes.push("Containers that are excluded or labelled hasat.update=false are left alone.");
+  if (!confirm(`This will ${what} on ${who}.\n\n${notes.join("\n")}\n\nContinue?`)) return;
+  try {
+    const job = await api("api/bulk-update", { method: "POST", body: { scope, satellites: satIds } });
+    state.bulk = job; state.dismissedBulk = null;
+    toast("Update started — progress is shown at the top");
+    drawList();
+  } catch (e) { toast(e.message, 6000); }
+}
+
+function renderList() {
+  drawList();
+  everyLive(async () => { if (!state.current) { await refresh().catch(() => {}); if (!state.current && !modal.open) drawList(); } });
 }
 
 // ------------------------------------------------------------------ launch a satellite
@@ -277,7 +400,7 @@ function tabOverview(el, s) {
     on("#o-reboot", () => reboot());
   };
   draw();
-  every(10000, async () => { await refresh().catch(() => {}); if (state.tab === "overview" && currentSat()) draw(); });
+  everyLive(async () => { await refresh().catch(() => {}); if (state.tab === "overview" && currentSat()) draw(); });
 }
 
 async function reboot() {
@@ -984,3 +1107,4 @@ async function openRemoveDialog(s) {
 $("#add-btn").onclick = openAdd;
 $("#brand").onclick = () => go();
 render();
+sendPresence();

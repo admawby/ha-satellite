@@ -19,6 +19,7 @@ Assistant instance — one add-on, installed from this repository.
 - **Files & USB storage** — browse and edit the Pi's files, upload/download, mount USB drives
 - **Auto updates** — scheduled `apt` upgrades with optional reboot; the satellite
   agent itself updates with the add-on
+- **Bulk updates** — Update All / all packages / all Docker images across every device in one click
 - **Secure, LAN-only** — private CA, mutual TLS, one-time pinned enrollment and an
   nftables rule that only lets your HA host in
 

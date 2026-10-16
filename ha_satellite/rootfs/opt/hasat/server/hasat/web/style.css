@@ -128,3 +128,7 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 .bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin-top: 4px; }
 .bar > i { display: block; height: 100%; background: var(--accent); }
 .bar > i.warn { background: var(--warn); } .bar > i.bad { background: var(--bad); }
+
+.bulkbar { margin-bottom: 14px; }
+.bulk-panel table td { border-bottom: none; padding: 4px 8px; }
+.tile-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }

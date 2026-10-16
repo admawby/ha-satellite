@@ -87,7 +87,35 @@ def build_ui_app(mgr: "Manager") -> web.Application:
                 "trusted_ips": mgr.trusted_ips(),
             },
             "satellites": [s.to_api() for s in mgr.store.satellites.values()],
+            "live": mgr.live,
+            "poll_interval": mgr.current_interval(),
+            "bulk": mgr.bulk.latest(),
         })
+
+    async def presence(request: web.Request) -> web.Response:
+        # Sent by navigator.sendBeacon too (text/plain body), so parse the text ourselves.
+        try:
+            body = json.loads(await request.text() or "{}")
+        except ValueError:
+            body = {}
+        mgr.set_viewer(str(body.get("client", "")), bool(body.get("active")))
+        return web.json_response({"live": mgr.live, "poll_interval": mgr.current_interval()})
+
+    async def bulk_start(request: web.Request) -> web.Response:
+        body = await request.json()
+        ids = body.get("satellites")
+        if ids is not None and not isinstance(ids, list):
+            return web.json_response({"error": "satellites must be a list"}, status=400)
+        try:
+            job = mgr.bulk.start(str(body.get("scope", "")), [str(i) for i in ids] if ids else None)
+        except ValueError as err:
+            return web.json_response({"error": str(err)}, status=400)
+        except RuntimeError as err:
+            return web.json_response({"error": str(err)}, status=409)
+        return web.json_response(job.to_api())
+
+    async def bulk_status(_request: web.Request) -> web.Response:
+        return web.json_response(mgr.bulk.latest() or {})
 
     async def enroll_token(request: web.Request) -> web.Response:
         body = await request.json()
@@ -238,6 +266,9 @@ def build_ui_app(mgr: "Manager") -> web.Application:
     app.router.add_get("/api/state", state)
     app.router.add_post("/api/enroll", enroll_token)
     app.router.add_post("/api/launch", launch)
+    app.router.add_post("/api/presence", presence)
+    app.router.add_post("/api/bulk-update", bulk_start)
+    app.router.add_get("/api/bulk-update", bulk_status)
     app.router.add_get("/api/jobs/{job_id}", job)
     app.router.add_patch("/api/sat/{sat_id}", update_sat)
     app.router.add_delete("/api/sat/{sat_id}", delete_sat)
