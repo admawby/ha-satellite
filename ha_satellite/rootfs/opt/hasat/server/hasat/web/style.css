@@ -64,6 +64,8 @@ main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
 .sat-head h3 { margin: 0; font-size: 16px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
 .dot.on { background: var(--ok); }
+.dot.upd { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
 .stat { background: var(--surface-2); border-radius: 8px; padding: 8px; }
 .stat .v { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0
+
+- **Agent updates no longer look like outages**: while the add-on installs a new agent and the
+  device restarts it, the satellite shows **updating** (amber dot, "updating agent to x.y.z…")
+  instead of offline. Home Assistant keeps its sensors available and no "went offline"
+  warning is logged. A device that doesn't return within 3 minutes is reported offline with the reason
+- Home Assistant: new **Satellite agent** update entity per device (installed vs. latest version,
+  native *Installing…* progress, *Install* button) and a **Connection** sensor
+  (`online` / `updating` / `offline`, always available)
+
 ## 0.6.1
 
 - **Dismiss** on the update progress panel now sticks: the add-on remembers it, so the panel

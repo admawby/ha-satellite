@@ -9,7 +9,7 @@ import secrets
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 TOKEN_TTL = 30 * 60
 
@@ -32,6 +32,9 @@ class Satellite:
     last_seen: float = 0.0
     last_error: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
+    # Set while the add-on is installing a new agent on the device: {"to": version, "since": ts}.
+    # The device restarts during this window; that is expected, not an outage.
+    agent_update: Optional[dict[str, Any]] = None
 
     PERSISTED = ("id", "name", "host", "port", "created", "hostname")
 
@@ -42,9 +45,16 @@ class Satellite:
     def to_record(self) -> dict[str, Any]:
         return {k: getattr(self, k) for k in self.PERSISTED}
 
+    @property
+    def status(self) -> str:
+        if self.agent_update:
+            return "updating"
+        return "online" if self.online else "offline"
+
     def to_api(self) -> dict[str, Any]:
         data = asdict(self)
         data["slug"] = self.slug
+        data["status"] = self.status
         return data
 
 

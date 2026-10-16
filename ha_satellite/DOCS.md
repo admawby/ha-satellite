@@ -178,6 +178,19 @@ appears as a **device** with these entities (otherwise they are published as pla
 - Binary sensors: throttled, under-voltage, reboot required
 - Buttons: reboot, check for updates, install updates
 
+- Connection: `online`, `updating` or `offline`. It stays available even when the device
+  is offline, so automations can react to it
+- Update entity **Satellite agent**: shows the agent version on the device and the version
+  bundled with the add-on. It appears under *Settings → Updates* when they differ, and
+  shows *Installing…* while the device restarts on its new agent
+
+**Agent updates are not outages.** When the add-on installs a new agent on a device (after
+an add-on update, *Reinstall agent*, or *Install* on the update entity), the device restarts
+its agent. For up to 3 minutes that restart is shown as **updating**: an amber pulsing dot in
+the UI, *Installing…* in Home Assistant, and the device's sensors stay available instead of
+going unavailable. If the device has not come back on the new version after 3 minutes, it is
+reported offline with the reason.
+
 Example automation — alert when a satellite overheats:
 
 ```yaml

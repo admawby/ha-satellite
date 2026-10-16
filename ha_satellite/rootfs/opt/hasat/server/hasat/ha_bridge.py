@@ -38,6 +38,7 @@ class Entity:
     category: str | None = None
     precision: int | None = None
     feature: str = "health"  # entity only exists if the satellite offers this feature
+    always_available: bool = False  # not tied to the satellite's availability (e.g. Connection)
 
 
 SENSORS: list[Entity] = [
@@ -51,6 +52,8 @@ SENSORS: list[Entity] = [
     Entity("docker_updates", "Container updates", icon="mdi:docker", state_class="measurement", feature="docker"),
     Entity("containers_running", "Containers running", icon="mdi:docker", state_class="measurement", feature="docker"),
     Entity("agent_version", "Agent version", icon="mdi:tag", category="diagnostic"),
+    Entity("connection", "Connection", icon="mdi:lan-connect", category="diagnostic", always_available=True),
+    Entity("agent", "Satellite agent", component="update", device_class="firmware", category="config"),
     Entity("ip_address", "IP address", icon="mdi:ip-network", category="diagnostic"),
     Entity("throttled", "Throttled", component="binary_sensor", device_class="problem", feature="power"),
     Entity("under_voltage", "Under-voltage", component="binary_sensor", device_class="problem", feature="power"),
@@ -61,7 +64,7 @@ SENSORS: list[Entity] = [
     Entity("update_containers", "Update containers", component="button", icon="mdi:docker", category="config", feature="docker"),
 ]
 
-BUTTON_ACTIONS = {e.key for e in SENSORS if e.component == "button"}
+BUTTON_ACTIONS = {e.key for e in SENSORS if e.component == "button"} | {"update_agent"}
 ALL_FEATURES = {"health", "terminal", "docker", "docker_install", "radios", "files",
                 "updates", "logs", "power", "services", "firewall"}
 
@@ -90,6 +93,7 @@ def flatten(sat: Satellite) -> dict[str, Any]:
         "docker_updates": dock.get("updates_available") if dock.get("available") else None,
         "containers_running": dock.get("running") if dock.get("available") else None,
         "agent_version": m.get("agent_version"),
+        "connection": sat.status,
         "ip_address": sat.host,
         "throttled": bool(thr.get("throttled_now")),
         "under_voltage": bool(thr.get("under_voltage_now")),
@@ -105,6 +109,7 @@ class HABridge:
         self._mqtt_connected = False
         self._announced: dict[str, tuple] = {}
         self._http: aiohttp.ClientSession | None = None
+        self.latest_agent_version: str | None = None  # set by the manager
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -221,14 +226,18 @@ class HABridge:
                     "default_entity_id": f"{ent.component}.hasat_{sat.slug}_{ent.key}",
                     "device": device,
                     "availability_mode": "all",
-                    "availability": [
-                        {"topic": f"{BASE}/bridge/availability"},
-                        {"topic": avail_topic},
-                    ],
+                    "availability": [{"topic": f"{BASE}/bridge/availability"}]
+                    + ([] if ent.always_available else [{"topic": avail_topic}]),
                     "origin": {"name": "HA Satellite", "sw_version": __version__},
                 }
                 if ent.component == "button":
                     cfg.update(command_topic=f"{BASE}/{sat.id}/cmd", payload_press=ent.key)
+                elif ent.component == "update":
+                    # Native HA update entity: versions + "Installing..." while the agent updates.
+                    cfg.update(state_topic=f"{BASE}/{sat.id}/agent_update", command_topic=f"{BASE}/{sat.id}/cmd",
+                               payload_install="update_agent", title="HA Satellite agent")
+                elif ent.key == "connection":
+                    cfg.update(state_topic=f"{BASE}/{sat.id}/connection")  # plain text, always published
                 else:
                     cfg.update(state_topic=state_topic, value_template=f"{{{{ value_json.{ent.key} }}}}")
                 if ent.component == "binary_sensor":
@@ -241,9 +250,18 @@ class HABridge:
                         cfg[attr] = val
                 self._mqtt.publish(topic, json.dumps(cfg), retain=True)
             self._announced[sat.id] = key
+        # During an agent update the device keeps "online" availability: the restart is expected.
         self._mqtt.publish(avail_topic, "online" if sat.online else "offline", retain=True)
+        self._mqtt.publish(f"{BASE}/{sat.id}/connection", sat.status, retain=True)
         if sat.online:
             self._mqtt.publish(state_topic, json.dumps(flatten(sat)), retain=True)
+        installed = (sat.metrics or {}).get("agent_version")
+        if installed:
+            self._mqtt.publish(f"{BASE}/{sat.id}/agent_update", json.dumps({
+                "installed_version": installed,
+                "latest_version": self.latest_agent_version or installed,
+                "in_progress": bool(sat.agent_update),
+            }), retain=True)
 
     async def _publish_rest(self, sat: Satellite) -> None:
         if not self._http or not SUPERVISOR_TOKEN:
@@ -251,12 +269,12 @@ class HABridge:
         values = flatten(sat)
         feats = sat_features(sat)
         for ent in SENSORS:
-            if ent.component == "button" or ent.feature not in feats:
+            if ent.component in ("button", "update") or ent.feature not in feats:
                 continue
             domain = "binary_sensor" if ent.component == "binary_sensor" else "sensor"
             entity_id = f"{domain}.hasat_{sat.slug}_{ent.key}"
             val = values.get(ent.key)
-            if not sat.online:
+            if not sat.online and not ent.always_available:
                 state = "unavailable"
             elif ent.component == "binary_sensor":
                 state = "on" if val else "off"
@@ -291,6 +309,6 @@ class HABridge:
         if self._mqtt and self._mqtt_connected:
             for ent in SENSORS:
                 self._mqtt.publish(f"{DISCOVERY_PREFIX}/{ent.component}/hasat_{sat.id}/{ent.key}/config", "", retain=True)
-            for suffix in ("state", "availability"):
+            for suffix in ("state", "availability", "connection", "agent_update"):
                 self._mqtt.publish(f"{BASE}/{sat.id}/{suffix}", "", retain=True)
         self._announced.pop(sat.id, None)

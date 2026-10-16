@@ -37,6 +37,7 @@ class Manager:
         self.launcher = Launcher(self)
         self.agent_bundle = build_agent_bundle(AGENT_SRC_DIR)
         self.agent_version = _agent_version()
+        self.bridge.latest_agent_version = self.agent_version
         self.install_template = (AGENT_SRC_DIR / "install.sh").read_text()
         self.enroll_host = options.enrollment_host
         self.enroll_port = ENROLL_PORT
@@ -46,7 +47,7 @@ class Manager:
         self._viewers: dict[str, float] = {}
         self._wake = asyncio.Event()
         self._inflight: set[str] = set()
-        self._published: dict[str, tuple[float, bool]] = {}
+        self._published: dict[str, tuple[float, str]] = {}
         self.bulk = BulkUpdates(self)
 
     # -------------------------------------------------------------- startup
@@ -195,6 +196,8 @@ class Manager:
         if sat:
             await self._poll(sat)
 
+    AGENT_UPDATE_GRACE = 180.0  # seconds a device may be unreachable while its agent restarts
+
     async def _poll(self, sat: Satellite) -> None:
         try:
             timeout = 8 if self.live else 20
@@ -206,15 +209,33 @@ class Manager:
             if hostname and hostname != sat.hostname:
                 sat.hostname = hostname
                 self.store.save()
+            upd = sat.agent_update
+            if upd and (sat.metrics.get("agent_version") == upd["to"]
+                        or time.time() - upd["since"] > self.AGENT_UPDATE_GRACE):
+                if sat.metrics.get("agent_version") == upd["to"]:
+                    _LOGGER.info("Satellite %s is back on agent %s", sat.name, upd["to"])
+                else:
+                    _LOGGER.warning("Satellite %s still reports agent %s after the update to %s",
+                                    sat.name, sat.metrics.get("agent_version"), upd["to"])
+                sat.agent_update = None
         except AgentError as err:
-            if sat.online:
-                _LOGGER.warning("Satellite %s went offline: %s", sat.name, err)
-            sat.online, sat.last_error = False, str(err)
+            upd = sat.agent_update
+            if upd and time.time() - upd["since"] <= self.AGENT_UPDATE_GRACE:
+                # Expected: the agent is restarting on its new version. Keep the device
+                # "online" for Home Assistant and show "updating" instead of an error.
+                sat.last_error = ""
+            else:
+                if upd:
+                    err = AgentError(f"did not come back after the agent update to {upd['to']} ({err})")
+                    sat.agent_update = None
+                if sat.online:
+                    _LOGGER.warning("Satellite %s went offline: %s", sat.name, err)
+                sat.online, sat.last_error = False, str(err)
         # Home Assistant gets updates at the normal pace even while the UI polls fast,
         # so live mode does not flood HA's history database. State changes go out at once.
-        last_time, last_online = self._published.get(sat.id, (0.0, not sat.online))
-        if sat.online != last_online or time.monotonic() - last_time >= self.options.poll_interval - 0.5:
-            self._published[sat.id] = (time.monotonic(), sat.online)
+        last_time, last_status = self._published.get(sat.id, (0.0, ""))
+        if sat.status != last_status or time.monotonic() - last_time >= self.options.poll_interval - 0.5:
+            self._published[sat.id] = (time.monotonic(), sat.status)
             await self.bridge.publish(sat)
         if sat.online and self.options.auto_update_agents:
             current = sat.metrics.get("agent_version")
@@ -226,10 +247,15 @@ class Manager:
         self._updating.add(sat.id)
         try:
             _LOGGER.info("Updating agent on %s to %s", sat.name, self.agent_version)
-            return await self.client.request(
+            result = await self.client.request(
                 sat, "POST", "/api/agent/update", data=self.agent_bundle,
                 params={"version": self.agent_version}, timeout=60,
             )
+            # The agent now restarts; tell HA and the UI right away that this is an update.
+            sat.agent_update = {"to": self.agent_version, "since": time.time()}
+            self._published[sat.id] = (time.monotonic(), sat.status)
+            await self.bridge.publish(sat)
+            return result
         except AgentError as err:
             _LOGGER.warning("Agent update on %s failed: %s", sat.name, err)
             raise
@@ -247,6 +273,13 @@ class Manager:
             "apply_updates": "/api/updates/apply",
             "update_containers": "/api/docker/update",
         }.get(action)
+        if action == "update_agent":  # HA update entity "Install"
+            if sat.online and not sat.agent_update:
+                try:
+                    await self.push_agent_update(sat)
+                except AgentError:
+                    pass
+            return
         if not path:
             return
         _LOGGER.info("Home Assistant requested %s on %s", action, sat.name)

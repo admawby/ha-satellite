@@ -111,6 +111,10 @@ async function render() {
 }
 
 // ------------------------------------------------------------------ list view
+// "updating" = the add-on is installing a new agent and the device is restarting it (expected).
+const dotClass = (s) => (s.status === "updating" ? "upd" : s.online ? "on" : "");
+const statusText = (s) => (s.status === "updating" ? `updating agent to ${s.agent_update.to}…`
+  : s.online ? "online" : `offline · last seen ${fmtAgo(s.last_seen)}`);
 const STEP_LABEL = { packages: "Packages", docker: "Docker images" };
 const bulkRunFor = (satId) => {
   const b = state.bulk;
@@ -120,7 +124,8 @@ const bulkRunFor = (satId) => {
 function satCard(s) {
   const m = s.metrics || {}, upd = m.updates || {}, thr = m.throttled || {};
   const chips = [];
-  if (!s.online) chips.push(`<span class="chip bad">offline${s.last_error ? " · " + esc(s.last_error.slice(0, 60)) : ""}</span>`);
+  if (s.status === "updating") chips.push(`<span class="chip warn">updating agent to ${esc(s.agent_update.to)}…</span>`);
+  else if (!s.online) chips.push(`<span class="chip bad">offline${s.last_error ? " · " + esc(s.last_error.slice(0, 60)) : ""}</span>`);
   if (upd.available) chips.push(`<span class="chip warn">${upd.available} update${upd.available > 1 ? "s" : ""}</span>`);
   if (upd.reboot_required) chips.push(`<span class="chip warn">reboot required</span>`);
   if (thr.under_voltage_now) chips.push(`<span class="chip bad">under-voltage</span>`);
@@ -132,7 +137,7 @@ function satCard(s) {
   if (m.agent_version && state.controller && m.agent_version !== state.controller.agent_version) chips.push(`<span class="chip">agent ${esc(m.agent_version)}</span>`);
 
   const run = bulkRunFor(s.id);
-  const busy = !!run || !s.online;
+  const busy = !!run || !s.online || s.status === "updating";
   const canPkgs = has(s, "updates") && s.online;
   const canDocker = has(s, "docker") && dk.available && s.online;
   const actions = [
@@ -142,7 +147,7 @@ function satCard(s) {
   const progress = run ? run.steps.filter((st) => st.state === "running").map((st) => `<span class="chip warn">updating ${STEP_LABEL[st.kind].toLowerCase()}…</span>`).join("") : "";
   return `
   <div class="card sat-card" data-id="${esc(s.id)}">
-    <div class="sat-head"><span class="dot ${s.online ? "on" : ""}"></span><h3>${esc(s.name)}</h3><span class="muted mono">${esc(s.host)}</span></div>
+    <div class="sat-head"><span class="dot ${dotClass(s)}" title="${esc(statusText(s))}"></span><h3>${esc(s.name)}</h3><span class="muted mono">${esc(s.host)}</span></div>
     <div class="muted">${esc(m.model || s.hostname || "")}${m.mode === "container" ? " · container agent" : ""}</div>
     <div class="stats">
       <div class="stat"><div class="v ${level(m.cpu_temp, 65, 80)}">${fmtTemp(m.cpu_temp)}</div><div class="l">CPU temp</div></div>
@@ -332,10 +337,10 @@ function renderDetail() {
   view.innerHTML = `
     <div class="detail-head">
       <button class="btn small" id="back">← All</button>
-      <span class="dot ${s.online ? "on" : ""}"></span><h2>${esc(s.name)}</h2>
+      <span class="dot ${dotClass(s)}" title="${esc(statusText(s))}"></span><h2>${esc(s.name)}</h2>
       <span class="muted mono">${esc(s.host)} · ${esc(s.id)}</span>
       <span class="spacer"></span>
-      <span class="muted">${s.online ? "online" : "offline · last seen " + fmtAgo(s.last_seen)}</span>
+      <span class="muted ${s.status === "updating" ? "warn" : ""}">${esc(statusText(s))}</span>
     </div>
     <nav class="tabs">${tabs.map(([k, l]) => `<button class="tab ${k === state.tab ? "active" : ""}" data-t="${k}">${l}</button>`).join("")}</nav>
     <section id="tab"></section>`;

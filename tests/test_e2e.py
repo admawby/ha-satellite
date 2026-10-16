@@ -21,6 +21,7 @@ import ssl
 import sys
 import tarfile
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -308,6 +309,56 @@ async def main() -> None:
     installed = TMP / "install" / "hasat-agent" / "hasat_agent" / "__init__.py"
     check(result.get("restarting") and installed.exists(), "agent bundle installed and restart triggered")
     check((TMP / "systemd" / "hasat-agent.service").exists(), "systemd unit refreshed on update")
+
+    print("agent update: device restarting")
+    check(sat.status == "updating" and sat.agent_update["to"] == mgr.agent_version, "agent update: satellite marked as updating")
+    await agent_runner.cleanup()  # the agent is restarting on its new code
+    await mgr.poll_one(sat.id)
+    check(sat.online and sat.status == "updating" and sat.last_error == "",
+          "agent update: the restart is not reported as offline")
+    async with aiohttp.ClientSession() as http:
+        async with http.get(f"http://127.0.0.1:{ui_port}/api/state") as r:
+            st = (await r.json())["satellites"][0]
+    check(st["status"] == "updating" and st["agent_update"]["to"] == mgr.agent_version, "agent update: UI sees 'updating'")
+    pub: dict = {}
+
+    class FakeMqttU:
+        def publish(self, topic, payload, retain=False):
+            pub[topic] = payload
+
+    b2 = ha_bridge.HABridge(lambda *_: asyncio.sleep(0))
+    b2._mqtt, b2._mqtt_connected, b2.latest_agent_version = FakeMqttU(), True, mgr.agent_version
+    b2._publish_mqtt(sat)
+    upd_cfg = json.loads(pub[f"homeassistant/update/hasat_{sat.id}/agent/config"])
+    upd_state = json.loads(pub[f"hasat/{sat.id}/agent_update"])
+    conn_cfg = json.loads(pub[f"homeassistant/sensor/hasat_{sat.id}/connection/config"])
+    check(upd_cfg["payload_install"] == "update_agent" and upd_cfg["device_class"] == "firmware",
+          "agent update: HA update entity announced")
+    check(upd_state["in_progress"] is True and pub[f"hasat/{sat.id}/availability"] == "online",
+          "agent update: HA shows 'installing' and keeps the device available")
+    check(pub[f"hasat/{sat.id}/connection"] == "updating" and len(conn_cfg["availability"]) == 1,
+          "agent update: Connection sensor says 'updating'")
+
+    agent_runner = await serve(agent.build_app(), agent_port, agent_server._ssl_context())  # back up
+    await mgr.poll_one(sat.id)
+    check(sat.status == "online" and sat.agent_update is None, "agent update: cleared once the device reports the new version")
+    b2._publish_mqtt(sat)
+    check(json.loads(pub[f"hasat/{sat.id}/agent_update"])["in_progress"] is False and pub[f"hasat/{sat.id}/connection"] == "online",
+          "agent update: HA back to normal")
+
+    await mgr.handle_ha_command(sat.id, "update_agent")
+    check(sat.status == "updating", "agent update: 'Install' on the HA update entity starts an update")
+    await mgr.poll_one(sat.id)
+    check(sat.status == "online", "agent update: HA-started update completes")
+
+    sat.agent_update = {"to": "9.9.9", "since": time.time() - 1000}  # never comes back
+    await agent_runner.cleanup()
+    await mgr.poll_one(sat.id)
+    check(not sat.online and sat.status == "offline" and "did not come back" in sat.last_error,
+          "agent update: a device that does not return is reported offline with the reason")
+    agent_runner = await serve(agent.build_app(), agent_port, agent_server._ssl_context())
+    await mgr.poll_one(sat.id)
+    check(sat.online, "agent back online")
 
     print("home assistant mqtt discovery")
     published: dict = {}
