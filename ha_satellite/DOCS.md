@@ -169,9 +169,18 @@ left alone.
 
 ## Home Assistant entities
 
-If the MQTT integration is set up (e.g. the Mosquitto add-on), every satellite
-appears as a **device** with these entities (otherwise they are published as plain
-`sensor.hasat_*` states without a device):
+Every satellite appears as a **device** with the entities below, each with a unique
+ID, so you can rename them, change icons, areas, units and so on from the UI. How they
+get there depends on your MQTT setup:
+
+| Your setup | How entities are published |
+| --- | --- |
+| Mosquitto broker add-on | MQTT discovery, straight to the broker |
+| MQTT integration with a broker elsewhere (another machine, NAS, ...) | MQTT discovery sent through Home Assistant's own `mqtt.publish` service; buttons come back through HA's websocket. No broker credentials needed |
+| No MQTT integration at all | Plain `sensor.hasat_*` states. These have **no unique ID** and can't be edited in the UI, so setting up MQTT is recommended |
+
+When the add-on switches from plain states to MQTT, the new entities keep the same
+entity IDs and therefore their history.
 
 - Sensors: CPU temperature, CPU usage, memory usage, disk usage, load (1m),
   last boot, package updates, agent version, IP address

@@ -16,6 +16,7 @@ import aiohttp
 
 from . import __version__
 from .config import SUPERVISOR_TOKEN, SUPERVISOR_URL
+from .ha_mqtt import HAMqttAdapter
 from .store import Satellite
 
 if TYPE_CHECKING:
@@ -110,6 +111,8 @@ class HABridge:
         self._announced: dict[str, tuple] = {}
         self._http: aiohttp.ClientSession | None = None
         self.latest_agent_version: str | None = None  # set by the manager
+        self._via_ha = False                # MQTT through Home Assistant's mqtt.publish service
+        self._rest_cleaned: set[str] = set()
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -118,11 +121,22 @@ class HABridge:
         creds = await self._mqtt_service()
         if creds:
             self._start_mqtt(creds)
+        elif SUPERVISOR_TOKEN and await HAMqttAdapter.available(self._http):
+            # Broker outside HA's add-ons: publish through HA's own MQTT integration.
+            adapter = HAMqttAdapter(self._http, self._ha_mqtt_message, self._ha_mqtt_reconnected,
+                                    [f"{BASE}/+/cmd", f"{DISCOVERY_PREFIX}/status"])
+            adapter.start()
+            self._mqtt, self._mqtt_connected, self._via_ha = adapter, True, True
+            _LOGGER.info("No MQTT add-on found; publishing via Home Assistant's MQTT integration (mqtt.publish)")
         else:
-            _LOGGER.info("No MQTT service found; publishing sensors through the Home Assistant REST API")
+            _LOGGER.info("No MQTT available; publishing sensors through the Home Assistant REST API "
+                         "(these entities have no unique ID; set up the MQTT integration to manage them in the UI)")
 
     async def stop(self) -> None:
-        if self._mqtt:
+        if self._via_ha:
+            self._mqtt.publish(f"{BASE}/bridge/availability", "offline", retain=True)
+            await self._mqtt.stop()
+        elif self._mqtt:
             try:
                 self._mqtt.publish(f"{BASE}/bridge/availability", "offline", retain=True).wait_for_publish(2)
             except (RuntimeError, ValueError):
@@ -184,10 +198,45 @@ class HABridge:
         if len(parts) == 3 and action in BUTTON_ACTIONS and self._loop:
             asyncio.run_coroutine_threadsafe(self._on_command(parts[1], action), self._loop)
 
+    async def _ha_mqtt_message(self, topic: str, payload: str) -> None:
+        if topic == f"{DISCOVERY_PREFIX}/status":
+            if payload == "online":
+                self._announced.clear()
+            return
+        parts = topic.split("/")
+        action = payload.strip()
+        if len(parts) == 3 and action in BUTTON_ACTIONS:
+            await self._on_command(parts[1], action)
+
+    def _ha_mqtt_reconnected(self) -> None:
+        self._announced.clear()  # HA may have restarted: announce entities again
+        if self._mqtt:
+            self._mqtt.publish(f"{BASE}/bridge/availability", "online", retain=True)
+
+    async def _delete_rest_states(self, sat: Satellite) -> None:
+        """Remove plain states written by the REST fallback (they have no unique ID).
+
+        Done before MQTT discovery so the new entities can take over the same entity IDs,
+        which keeps their history."""
+        if not (self._http and SUPERVISOR_TOKEN):
+            return
+        for ent in SENSORS:
+            if ent.component not in ("sensor", "binary_sensor"):
+                continue
+            try:
+                async with self._http.delete(f"{SUPERVISOR_URL}/core/api/states/{ent.component}.hasat_{sat.slug}_{ent.key}",
+                                             timeout=aiohttp.ClientTimeout(total=10)):
+                    pass
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                pass
+
     # ------------------------------------------------------------ publishing
     async def publish(self, sat: Satellite) -> None:
         try:
             if self._mqtt:
+                if sat.id not in self._rest_cleaned:
+                    self._rest_cleaned.add(sat.id)
+                    await self._delete_rest_states(sat)
                 self._publish_mqtt(sat)
             else:
                 await self._publish_rest(sat)
@@ -295,17 +344,9 @@ class HABridge:
 
     async def remove(self, sat: Satellite) -> None:
         """Delete the satellite's entities from HA (MQTT discovery and REST states)."""
-        if self._http and SUPERVISOR_TOKEN and not self._mqtt:
-            for ent in SENSORS:
-                if ent.component == "button":
-                    continue
-                domain = "binary_sensor" if ent.component == "binary_sensor" else "sensor"
-                try:
-                    async with self._http.delete(f"{SUPERVISOR_URL}/core/api/states/{domain}.hasat_{sat.slug}_{ent.key}",
-                                                 timeout=aiohttp.ClientTimeout(total=10)):
-                        pass
-                except aiohttp.ClientError:
-                    pass
+        if not self._mqtt:
+            await self._delete_rest_states(sat)
+        self._rest_cleaned.discard(sat.id)
         if self._mqtt and self._mqtt_connected:
             for ent in SENSORS:
                 self._mqtt.publish(f"{DISCOVERY_PREFIX}/{ent.component}/hasat_{sat.id}/{ent.key}/config", "", retain=True)

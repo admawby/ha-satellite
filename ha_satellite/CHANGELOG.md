@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1
+
+- **Entities are editable in the UI when your MQTT broker isn't an add-on**: if Home Assistant's
+  MQTT integration is set up but the broker runs elsewhere, the add-on now publishes MQTT
+  discovery through HA's own `mqtt.publish` service (and receives button presses through HA's
+  websocket) instead of falling back to plain states without unique IDs
+- On the switch, the old ID-less `sensor.hasat_*` states are removed first, so the new entities
+  keep the same entity IDs and their history
+- The log now says clearly when entities have no unique ID and why
+
 ## 0.8.0
 
 - **Click a value to see its history**: CPU temp, CPU, memory, disk, load, uptime, update

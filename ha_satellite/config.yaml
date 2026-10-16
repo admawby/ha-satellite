@@ -1,5 +1,5 @@
 name: HA Satellite
-version: "0.8.0"
+version: "0.8.1"
 slug: ha_satellite
 description: >-
   Launch satellites of this Home Assistant instance on remote Raspberry Pis:
