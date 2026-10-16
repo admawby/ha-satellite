@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0
+
+- **GPU usage and temperatures**: NVIDIA (nvidia-smi: usage, encoder/decoder, temperature, VRAM,
+  power, fan, clock), Intel (i915 per-engine busy counters incl. the QuickSync video engine; clock),
+  AMD (amdgpu sysfs) and Raspberry Pi (V3D stats)
+- Shown as a GPU chip on each satellite tile and a **Graphics** card on the Overview tab; all values
+  open their history in Home Assistant
+- Home Assistant sensors per GPU (usage, temperature, VRAM, power where available), with stable IDs
+  like `sensor.hasat_<name>_gpu_nvidia0_usage`; entities of a removed GPU are deleted
+- Works in container mode (Synology) too
+
 ## 0.8.2
 
 - Fix: 0.8.1 switched to "MQTT through Home Assistant" whenever the MQTT integration existed,

@@ -139,3 +139,6 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 [data-entity] { cursor: pointer; transition: box-shadow .12s, background .12s; }
 .stat[data-entity]:hover { box-shadow: inset 0 0 0 1px var(--accent); }
 .chip[data-entity]:hover, dd[data-entity]:hover, span[data-entity]:hover, .row[data-entity]:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+
+.gpu + .gpu { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.gpu .row { margin-bottom: 8px; }

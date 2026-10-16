@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Dict
 import aiohttp
 
 from .config import SUPERVISOR_TOKEN, SUPERVISOR_URL
-from .ha_bridge import SENSORS, sat_features
+from .ha_bridge import entities_for
 
 if TYPE_CHECKING:
     from .manager import Manager
@@ -81,10 +81,9 @@ class EntityResolver:
         result: Dict[str, Dict[str, str]] = {}
         rest_mode = self.mgr.bridge._mqtt is None
         for sat in sats:
-            feats = sat_features(sat)
             ents: Dict[str, str] = {}
-            for ent in SENSORS:
-                if ent.component == "button" or ent.feature not in feats:
+            for ent in entities_for(sat):
+                if ent.component == "button":
                     continue
                 entity_id = self._registry.get(f"hasat_{sat.id}_{ent.key}")
                 if not entity_id and rest_mode and ent.component in ("sensor", "binary_sensor"):

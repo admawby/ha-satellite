@@ -141,6 +141,53 @@ document.addEventListener("click", (ev) => {
   openMoreInfo(el.dataset.entity);
 }, true);
 
+// ------------------------------------------------------------------ GPUs
+const GPU_BRAND = { nvidia: "NVIDIA", intel: "Intel", amd: "AMD", pi: "VideoCore" };
+const ENGINE_LABEL = { render: "3D/render", video: "video (decode/encode)", video2: "video 2", video_enhance: "video enhance",
+  blitter: "copy", compute: "compute", encoder: "encoder", decoder: "decoder" };
+const gpusOf = (s) => ((s.metrics || {}).gpus || []);
+
+function gpuChips(s) {
+  const gpus = gpusOf(s);
+  return gpus.map((g) => {
+    const label = gpus.length === 1 ? "GPU" : GPU_BRAND[g.vendor] || "GPU";
+    const usage = g.usage == null ? "–" : `${Math.round(g.usage)}%`;
+    const temp = g.temp != null && !g.temp_shared ? ` · ${g.temp.toFixed(0)}°C` : "";
+    return `<span class="chip ${level(g.usage, 80, 95)}"${hx(s, `gpu_${g.key}_usage`)}>${label} ${usage}${temp}</span>`;
+  }).join("");
+}
+
+function gpuCard(s) {
+  const gpus = gpusOf(s);
+  if (!gpus.length) return "";
+  return `
+    <div class="card section">
+      <h4>Graphics</h4>
+      ${gpus.map((g) => {
+        const k = `gpu_${g.key}`;
+        // Integrated GPUs share the CPU's sensor: show that reading, labelled as such.
+        const temp = g.temp != null ? g.temp : g.temp_shared ? (s.metrics || {}).cpu_temp : null;
+        const engines = Object.entries(g.engines || {});
+        const extra = [g.freq_mhz != null ? `${Math.round(g.freq_mhz)}${g.freq_max_mhz ? ` / ${g.freq_max_mhz}` : ""} MHz` : "",
+          g.fan != null ? `fan ${Math.round(g.fan)}%` : ""].filter(Boolean).join(" · ");
+        return `
+        <div class="gpu">
+          <div class="row"><b>${esc(g.name)}</b><span class="muted">${esc(extra)}</span></div>
+          <div class="stats">
+            <div class="stat"${hx(s, `${k}_usage`)}><div class="v ${level(g.usage, 80, 95)}">${fmtPct(g.usage)}</div><div class="l">Usage</div></div>
+            ${temp != null ? `<div class="stat"${g.temp_shared ? hx(s, "cpu_temp") : hx(s, `${k}_temp`)}><div class="v ${level(temp, 75, 85)}">${fmtTemp(temp)}</div>
+              <div class="l">${g.temp_shared ? "Temp (shared with CPU)" : "Temperature"}</div></div>` : ""}
+            ${g.mem_total ? `<div class="stat"${hx(s, `${k}_mem_percent`)}><div class="v">${fmtPct(g.mem_percent)}</div>
+              <div class="l">VRAM ${fmtBytes(g.mem_used)} / ${fmtBytes(g.mem_total)}</div></div>` : ""}
+            ${g.power != null ? `<div class="stat"${hx(s, `${k}_power`)}><div class="v">${g.power.toFixed(1)} W</div>
+              <div class="l">Power${g.power_limit ? ` of ${Math.round(g.power_limit)} W` : ""}</div></div>` : ""}
+          </div>
+          ${engines.length ? `<div class="chips">${engines.map(([e, v]) => `<span class="chip ${level(v, 80, 95)}">${esc(ENGINE_LABEL[e] || e)} ${Math.round(v)}%</span>`).join("")}</div>` : ""}
+        </div>`;
+      }).join("")}
+    </div>`;
+}
+
 // ------------------------------------------------------------------ list view
 // "updating" = the add-on is installing a new agent and the device is restarting it (expected).
 const dotClass = (s) => (s.status === "updating" ? "upd" : s.online ? "on" : "");
@@ -186,7 +233,7 @@ function satCard(s) {
       <div class="stat"${hx(s, "mem_percent")}><div class="v ${level(m.mem_percent, 80, 92)}">${fmtPct(m.mem_percent)}</div><div class="l">Memory</div></div>
       <div class="stat"${hx(s, "disk_percent")}><div class="v ${level(m.disk_percent, 80, 92)}">${fmtPct(m.disk_percent)}</div><div class="l">Disk</div></div>
     </div>
-    <div class="chips">${progress}${chips.join("")}<span class="chip"${hx(s, "boot_time")}>up ${fmtDur(m.uptime)}</span></div>
+    <div class="chips">${progress}${gpuChips(s)}${chips.join("")}<span class="chip"${hx(s, "boot_time")}>up ${fmtDur(m.uptime)}</span></div>
     ${actions ? `<div class="tile-actions">${actions}</div>` : ""}
   </div>`;
 }
@@ -436,7 +483,7 @@ function tabOverview(el, s) {
             ${has(sat, "power") ? '<button class="btn" id="o-reboot">Reboot</button>' : ""}
           </div>
         </div>
-      </div>`;
+      </div>${gpuCard(sat)}`;
     on("#o-term", () => go(state.current, "terminal"));
     on("#o-reboot", () => reboot());
   };

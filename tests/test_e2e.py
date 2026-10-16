@@ -80,6 +80,7 @@ import removal_cases  # noqa: E402
 import terminal_cases  # noqa: E402
 import live_bulk_cases  # noqa: E402
 import entities_cases  # noqa: E402
+import gpu_cases  # noqa: E402
 from fake_docker import FakeDocker  # noqa: E402
 
 PASSED: list[str] = []
@@ -287,6 +288,9 @@ async def main() -> None:
     async with aiohttp.ClientSession() as http:
         await docker_cases.run(check, http, ui, sat.id, agent, fake)
         await files_cases.run_docker_install(check, http, ui, sat.id, agent)
+
+    print("gpu")
+    gpu_cases.run(check, sat)
 
     print("history links")
     sup_runner = await serve(entities_cases.fake_supervisor(sat.id), SUPERVISOR_PORT)

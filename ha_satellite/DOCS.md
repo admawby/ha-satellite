@@ -193,6 +193,20 @@ entity IDs and therefore their history.
   bundled with the add-on. It appears under *Settings → Updates* when they differ, and
   shows *Installing…* while the device restarts on its new agent
 
+**GPUs.** Graphics cards and integrated GPUs are detected automatically and shown on
+the satellite tile (usage and temperature) and in a **Graphics** card on the Overview tab:
+
+| GPU | What is shown |
+| --- | --- |
+| NVIDIA (driver with `nvidia-smi`) | usage, encoder/decoder load, temperature, VRAM, power (and limit), fan, clock |
+| Intel (i915) | usage per engine: 3D/render, **video** (QuickSync decode/encode, e.g. Plex transcoding), video enhance, copy; clock. Integrated GPUs have no own temperature sensor, so the CPU package temperature is shown, labelled as shared |
+| AMD (amdgpu) | usage, temperature, VRAM, power |
+| Raspberry Pi | VideoCore usage where the kernel provides V3D statistics; temperature is the SoC sensor shared with the CPU |
+
+Home Assistant gets per GPU a usage sensor plus temperature, VRAM and power sensors where
+available, e.g. `sensor.hasat_plexer_gpu_nvidia0_usage` or `sensor.hasat_plexer_gpu_intel0_usage`
+(`vendor` + number, so IDs stay stable). Intel usage is measured between two polls, like CPU usage.
+
 **History at a click.** In the Satellites page, values that have a Home Assistant entity
 are clickable and open Home Assistant's own pop-up with the history graph. Hover them to
 see the entity ID. That covers CPU temperature, CPU, memory, disk, load, uptime,

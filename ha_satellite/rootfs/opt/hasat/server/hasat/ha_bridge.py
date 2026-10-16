@@ -76,6 +76,33 @@ def sat_features(sat: Satellite) -> set:
     return set(feats) if feats else set(ALL_FEATURES)
 
 
+def gpu_entities(sat: Satellite) -> list[Entity]:
+    """Entities for the GPUs this satellite reports (keys are stable: gpu_<vendor><n>_...)."""
+    gpus = (sat.metrics or {}).get("gpus") or []
+    out: list[Entity] = []
+    for g in gpus:
+        label = "GPU" if len(gpus) == 1 else f"GPU {g.get('name') or g['key']}"
+        k = f"gpu_{g['key']}"
+        out.append(Entity(f"{k}_usage", f"{label} usage", unit="%", state_class="measurement",
+                          icon="mdi:expansion-card", precision=0))
+        if g.get("temp") is not None and not g.get("temp_shared"):
+            out.append(Entity(f"{k}_temp", f"{label} temperature", unit="°C", device_class="temperature",
+                              state_class="measurement", precision=0))
+        if g.get("mem_total"):
+            out.append(Entity(f"{k}_mem_percent", f"{label} memory", unit="%", state_class="measurement",
+                              icon="mdi:memory", precision=0))
+        if g.get("power") is not None:
+            out.append(Entity(f"{k}_power", f"{label} power", unit="W", device_class="power",
+                              state_class="measurement", precision=1))
+    return out
+
+
+def entities_for(sat: Satellite) -> list[Entity]:
+    """Every entity this satellite should have: fixed ones for its features plus its GPUs."""
+    feats = sat_features(sat)
+    return [e for e in SENSORS if e.feature in feats] + gpu_entities(sat)
+
+
 def flatten(sat: Satellite) -> dict[str, Any]:
     """Map raw agent metrics onto the entity keys above."""
     m = sat.metrics or {}
@@ -83,7 +110,12 @@ def flatten(sat: Satellite) -> dict[str, Any]:
     upd = m.get("updates") or {}
     load = m.get("load") or [None]
     dock = m.get("docker") or {}
-    return {
+    values: dict[str, Any] = {}
+    for g in m.get("gpus") or []:
+        k = f"gpu_{g['key']}"
+        values.update({f"{k}_usage": g.get("usage"), f"{k}_temp": g.get("temp"),
+                       f"{k}_mem_percent": g.get("mem_percent"), f"{k}_power": g.get("power")})
+    return values | {
         "cpu_temp": m.get("cpu_temp"),
         "cpu_percent": m.get("cpu_percent"),
         "mem_percent": m.get("mem_percent"),
@@ -114,6 +146,7 @@ class HABridge:
         self._via_ha = False                # MQTT through Home Assistant's mqtt.publish service
         self._retry_task: asyncio.Task | None = None
         self._rest_cleaned: set[str] = set()
+        self._announced_gpu: dict[str, set] = {}  # GPU entity keys announced per satellite
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -254,7 +287,7 @@ class HABridge:
         which keeps their history."""
         if not (self._http and SUPERVISOR_TOKEN):
             return
-        for ent in SENSORS:
+        for ent in SENSORS + gpu_entities(sat):
             if ent.component not in ("sensor", "binary_sensor"):
                 continue
             try:
@@ -295,11 +328,16 @@ class HABridge:
         avail_topic = f"{BASE}/{sat.id}/availability"
         state_topic = f"{BASE}/{sat.id}/state"
         feats = sat_features(sat)
-        key = tuple(sorted(feats))
-        # Announce once we know the satellite's features, and again if they change.
+        gpu_ents = gpu_entities(sat)
+        key = (tuple(sorted(feats)), tuple(e.key for e in gpu_ents))
+        # Announce once we know the satellite's features (and GPUs), and again if they change.
         if sat.metrics and self._announced.get(sat.id) != key:
             device = self._device(sat)
-            for ent in SENSORS:
+            current_gpu = {e.key for e in gpu_ents}
+            for old in self._announced_gpu.get(sat.id, set()) - current_gpu:  # GPU gone
+                self._mqtt.publish(f"{DISCOVERY_PREFIX}/sensor/hasat_{sat.id}/{old}/config", "", retain=True)
+            self._announced_gpu[sat.id] = current_gpu
+            for ent in SENSORS + gpu_ents:
                 topic = f"{DISCOVERY_PREFIX}/{ent.component}/hasat_{sat.id}/{ent.key}/config"
                 if ent.feature not in feats:
                     self._mqtt.publish(topic, "", retain=True)  # drop entities this satellite cannot have
@@ -353,7 +391,7 @@ class HABridge:
             return
         values = flatten(sat)
         feats = sat_features(sat)
-        for ent in SENSORS:
+        for ent in SENSORS + gpu_entities(sat):
             if ent.component in ("button", "update") or ent.feature not in feats:
                 continue
             domain = "binary_sensor" if ent.component == "binary_sensor" else "sensor"
@@ -384,8 +422,10 @@ class HABridge:
             await self._delete_rest_states(sat)
         self._rest_cleaned.discard(sat.id)
         if self._mqtt and self._mqtt_connected:
-            for ent in SENSORS:
-                self._mqtt.publish(f"{DISCOVERY_PREFIX}/{ent.component}/hasat_{sat.id}/{ent.key}/config", "", retain=True)
+            gpu_keys = {e.key for e in gpu_entities(sat)} | self._announced_gpu.get(sat.id, set())
+            for comp, k in [(e.component, e.key) for e in SENSORS] + [("sensor", k) for k in gpu_keys]:
+                self._mqtt.publish(f"{DISCOVERY_PREFIX}/{comp}/hasat_{sat.id}/{k}/config", "", retain=True)
             for suffix in ("state", "availability", "connection", "agent_update"):
                 self._mqtt.publish(f"{BASE}/{sat.id}/{suffix}", "", retain=True)
         self._announced.pop(sat.id, None)
+        self._announced_gpu.pop(sat.id, None)

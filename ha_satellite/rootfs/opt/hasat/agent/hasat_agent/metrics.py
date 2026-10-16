@@ -105,6 +105,15 @@ def _synology_model() -> Optional[str]:
     return f"Synology {model}" if model else None
 
 
+def _gpus() -> list:
+    from . import gpu  # local import: optional hardware probing
+
+    try:
+        return gpu.collect(cpu_temp())
+    except Exception:  # noqa: BLE001 - GPU stats must never break the health report
+        return []
+
+
 def addresses() -> Dict[str, list]:
     result: Dict[str, list] = {}
     for iface, addrs in psutil.net_if_addrs().items():
@@ -140,5 +149,6 @@ def collect() -> Dict[str, Any]:
         "uptime": int(dt.datetime.now().timestamp() - boot),
         "boot_time_iso": dt.datetime.fromtimestamp(boot, dt.timezone.utc).isoformat(),
         "throttled": throttled(),
+        "gpus": _gpus(),
         "addresses": addresses(),
     }
