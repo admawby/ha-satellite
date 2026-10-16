@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.2
+
+- Fix: 0.8.1 switched to "MQTT through Home Assistant" whenever the MQTT integration existed,
+  even if it had no working broker (e.g. after removing the Mosquitto add-on). The old sensors
+  were removed and the new ones could never be created, so satellites had no entities and
+  history links stopped working
+- The add-on now sends a test message first and only switches to MQTT (and removes the old
+  plain states) when Home Assistant can really publish
+- If publishing over MQTT starts failing, it falls back to plain states automatically so the
+  entities stay visible. It re-checks MQTT every 5 minutes and switches back once it works again
+
 ## 0.8.1
 
 - **Entities are editable in the UI when your MQTT broker isn't an add-on**: if Home Assistant's

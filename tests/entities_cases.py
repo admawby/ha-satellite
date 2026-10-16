@@ -11,7 +11,8 @@ import aiohttp
 from aiohttp import web
 
 TOKEN = "test-supervisor-token"
-EVENTS: list = []  # ("publish", topic, payload, retain) / ("delete", entity_id) in order
+EVENTS: list = []  # ("publish", topic, payload, retain) / ("delete", entity_id) / ("state", entity_id)
+BROKER = {"connected": True}  # flip to simulate HA's MQTT integration losing its broker
 
 
 def fake_supervisor(sat_id: str) -> web.Application:
@@ -52,8 +53,14 @@ def fake_supervisor(sat_id: str) -> web.Application:
 
     async def mqtt_publish(request):
         body = await request.json()
+        if not BROKER["connected"]:  # what HA answers when its MQTT client has no broker
+            return web.Response(status=500, text="500 Internal Server Error - Server got itself in trouble")
         EVENTS.append(("publish", body["topic"], body["payload"], body.get("retain")))
         return web.json_response([])
+
+    async def set_state(request):
+        EVENTS.append(("state", request.match_info["entity_id"]))
+        return web.json_response({}, status=201)
 
     async def delete_state(request):
         EVENTS.append(("delete", request.match_info["entity_id"]))
@@ -65,6 +72,7 @@ def fake_supervisor(sat_id: str) -> web.Application:
     app.router.add_get("/core/api/config", core_config)
     app.router.add_post("/core/api/services/mqtt/publish", mqtt_publish)
     app.router.add_delete("/core/api/states/{entity_id}", delete_state)
+    app.router.add_post("/core/api/states/{entity_id}", set_state)
     return app
 
 
@@ -128,7 +136,7 @@ async def run_ha_mqtt(check: Callable[[bool, str], None], sat) -> None:
         check(cfg["unique_id"] == f"hasat_{sat.id}_cpu_temp" and pubs[cfg_topic][3] is True
               and cfg["default_entity_id"] == f"sensor.hasat_{sat.slug}_cpu_temp",
               "mqtt via HA: discovery with unique IDs published (retained) through mqtt.publish")
-        first_publish = next(i for i, e in enumerate(EVENTS) if e[0] == "publish")
+        first_publish = next(i for i, e in enumerate(EVENTS) if e[0] == "publish" and e[1] != "hasat/bridge/probe")
         deleted = [e[1] for e in EVENTS[:first_publish] if e[0] == "delete"]
         check(f"sensor.hasat_{sat.slug}_cpu_temp" in deleted,
               "mqtt via HA: old ID-less states removed first, so entities keep their IDs and history")
@@ -143,3 +151,50 @@ async def run_ha_mqtt(check: Callable[[bool, str], None], sat) -> None:
         await bridge.stop()
     last = [e for e in EVENTS if e[0] == "publish" and e[1] == "hasat/bridge/availability"]
     check(last and last[-1][2] == "offline", "mqtt via HA: marked unavailable when the add-on stops")
+
+
+async def run_ha_mqtt_failures(check: Callable[[bool, str], None], sat) -> None:
+    """HA's MQTT integration exists but has no broker (e.g. Mosquitto add-on removed)."""
+    from hasat.ha_bridge import HABridge
+
+    async def on_command(*_):
+        pass
+
+    # 1) Broken from the start: keep plain states, delete nothing.
+    EVENTS.clear()
+    BROKER["connected"] = False
+    bridge = HABridge(on_command)
+    HABridge.HA_MQTT_RETRY = 0.5
+    await bridge.start()
+    try:
+        check(not bridge._via_ha, "mqtt via HA: integration without a broker is detected (test publish fails)")
+        await bridge.publish(sat)
+        check(any(e == ("state", f"sensor.hasat_{sat.slug}_cpu_temp") for e in EVENTS)
+              and not any(e[0] == "delete" for e in EVENTS),
+              "mqtt via HA: entities stay as plain states and nothing is deleted")
+
+        # 2) The broker comes back: switch to MQTT discovery automatically.
+        BROKER["connected"] = True
+        for _ in range(40):
+            if bridge._via_ha:
+                break
+            await asyncio.sleep(0.1)
+        check(bridge._via_ha, "mqtt via HA: switches to MQTT once the broker works")
+        EVENTS.clear()
+        await bridge.publish(sat)
+        await asyncio.sleep(0.5)
+        check(any(e[0] == "publish" and e[1].endswith("/cpu_temp/config") for e in EVENTS),
+              "mqtt via HA: discovery sent after recovery")
+
+        # 3) The broker disappears again: fall back to plain states so entities stay visible.
+        BROKER["connected"] = False
+        EVENTS.clear()
+        for _ in range(3):
+            await bridge.publish(sat)
+            await asyncio.sleep(0.4)
+        check(not bridge._via_ha and any(e == ("state", f"sensor.hasat_{sat.slug}_cpu_temp") for e in EVENTS),
+              "mqtt via HA: falls back to plain states when HA can no longer publish")
+    finally:
+        BROKER["connected"] = True
+        HABridge.HA_MQTT_RETRY = 300.0
+        await bridge.stop()

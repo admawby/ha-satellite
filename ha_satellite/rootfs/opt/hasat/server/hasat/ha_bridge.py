@@ -112,6 +112,7 @@ class HABridge:
         self._http: aiohttp.ClientSession | None = None
         self.latest_agent_version: str | None = None  # set by the manager
         self._via_ha = False                # MQTT through Home Assistant's mqtt.publish service
+        self._retry_task: asyncio.Task | None = None
         self._rest_cleaned: set[str] = set()
 
     # ------------------------------------------------------------- lifecycle
@@ -122,17 +123,15 @@ class HABridge:
         if creds:
             self._start_mqtt(creds)
         elif SUPERVISOR_TOKEN and await HAMqttAdapter.available(self._http):
-            # Broker outside HA's add-ons: publish through HA's own MQTT integration.
-            adapter = HAMqttAdapter(self._http, self._ha_mqtt_message, self._ha_mqtt_reconnected,
-                                    [f"{BASE}/+/cmd", f"{DISCOVERY_PREFIX}/status"])
-            adapter.start()
-            self._mqtt, self._mqtt_connected, self._via_ha = adapter, True, True
-            _LOGGER.info("No MQTT add-on found; publishing via Home Assistant's MQTT integration (mqtt.publish)")
+            self._use_ha_mqtt()
         else:
-            _LOGGER.info("No MQTT available; publishing sensors through the Home Assistant REST API "
-                         "(these entities have no unique ID; set up the MQTT integration to manage them in the UI)")
+            self._rest_fallback_notice()
+            if SUPERVISOR_TOKEN:
+                self._retry_task = asyncio.create_task(self._retry_ha_mqtt())
 
     async def stop(self) -> None:
+        if self._retry_task:
+            self._retry_task.cancel()
         if self._via_ha:
             self._mqtt.publish(f"{BASE}/bridge/availability", "offline", retain=True)
             await self._mqtt.stop()
@@ -198,6 +197,41 @@ class HABridge:
         if len(parts) == 3 and action in BUTTON_ACTIONS and self._loop:
             asyncio.run_coroutine_threadsafe(self._on_command(parts[1], action), self._loop)
 
+    HA_MQTT_RETRY = 300.0  # seconds between checks whether HA's MQTT works (again)
+
+    def _use_ha_mqtt(self) -> None:
+        """Broker outside HA's add-ons: publish through HA's own MQTT integration."""
+        adapter = HAMqttAdapter(self._http, self._ha_mqtt_message, self._ha_mqtt_reconnected,
+                                [f"{BASE}/+/cmd", f"{DISCOVERY_PREFIX}/status"])
+        adapter.start()
+        self._mqtt, self._mqtt_connected, self._via_ha = adapter, True, True
+        self._announced.clear()
+        self._rest_cleaned.clear()
+        _LOGGER.info("No MQTT add-on found; publishing via Home Assistant's MQTT integration (mqtt.publish)")
+
+    @staticmethod
+    def _rest_fallback_notice() -> None:
+        _LOGGER.info("No working MQTT; publishing sensors through the Home Assistant REST API "
+                     "(these entities have no unique ID; connect the MQTT integration to a broker to manage them in the UI)")
+
+    async def _fall_back_to_rest(self) -> None:
+        """HA's MQTT stopped working: go back to plain states so the entities stay visible."""
+        _LOGGER.warning("Home Assistant could not publish over MQTT %d times in a row; switching back to plain "
+                        "states and re-checking MQTT every %d s", HAMqttAdapter.FAILURE_LIMIT, int(self.HA_MQTT_RETRY))
+        adapter = self._mqtt
+        self._mqtt, self._mqtt_connected, self._via_ha = None, False, False
+        self._announced.clear()
+        self._rest_cleaned.clear()
+        asyncio.create_task(adapter.stop())
+        if not self._retry_task or self._retry_task.done():
+            self._retry_task = asyncio.create_task(self._retry_ha_mqtt())
+
+    async def _retry_ha_mqtt(self) -> None:
+        while not self._mqtt:
+            await asyncio.sleep(self.HA_MQTT_RETRY)
+            if not self._mqtt and await HAMqttAdapter.available(self._http):
+                self._use_ha_mqtt()
+
     async def _ha_mqtt_message(self, topic: str, payload: str) -> None:
         if topic == f"{DISCOVERY_PREFIX}/status":
             if payload == "online":
@@ -233,6 +267,8 @@ class HABridge:
     # ------------------------------------------------------------ publishing
     async def publish(self, sat: Satellite) -> None:
         try:
+            if self._via_ha and not self._mqtt.healthy:
+                await self._fall_back_to_rest()
             if self._mqtt:
                 if sat.id not in self._rest_cleaned:
                     self._rest_cleaned.add(sat.id)

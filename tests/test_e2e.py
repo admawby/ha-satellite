@@ -293,6 +293,7 @@ async def main() -> None:
     async with aiohttp.ClientSession() as http:
         await entities_cases.run(check, http, ui, mgr, sat)
     await entities_cases.run_ha_mqtt(check, sat)
+    await entities_cases.run_ha_mqtt_failures(check, sat)
     await sup_runner.cleanup()
 
     print("live polling + bulk updates")

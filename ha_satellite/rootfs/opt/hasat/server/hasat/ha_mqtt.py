@@ -44,15 +44,33 @@ class HAMqttAdapter:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._tasks: list = []
         self.connected = False
+        self.failures = 0  # consecutive failed publishes
+
+    FAILURE_LIMIT = 3
+
+    @property
+    def healthy(self) -> bool:
+        return self.failures < self.FAILURE_LIMIT
 
     @staticmethod
     async def available(http: aiohttp.ClientSession) -> bool:
-        """True when Home Assistant has the MQTT integration loaded."""
+        """True only when HA's MQTT integration is loaded AND actually connected to a broker.
+
+        The integration can be "loaded" while its broker is gone (e.g. the Mosquitto add-on
+        was removed), so a real test message is published; HA answers with an error when
+        its MQTT client is not connected."""
         try:
             async with http.get(f"{SUPERVISOR_URL}/core/api/config", timeout=aiohttp.ClientTimeout(total=10)) as r:
-                if r.status != 200:
+                if r.status != 200 or "mqtt" not in (await r.json()).get("components", []):
                     return False
-                return "mqtt" in (await r.json()).get("components", [])
+            async with http.post(f"{SUPERVISOR_URL}/core/api/services/mqtt/publish",
+                                 json={"topic": "hasat/bridge/probe", "payload": "1", "retain": False, "qos": 0},
+                                 timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status >= 400:
+                    _LOGGER.info("Home Assistant's MQTT integration is not connected to a broker (HTTP %s: %s)",
+                                 r.status, (await r.text())[:200])
+                    return False
+                return True
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
             return False
 
@@ -79,19 +97,22 @@ class HAMqttAdapter:
         while True:
             topic, payload, retain = await self._queue.get()
             try:
-                for attempt in range(3):
-                    try:
-                        async with self._http.post(
-                            f"{SUPERVISOR_URL}/core/api/services/mqtt/publish",
-                            json={"topic": topic, "payload": payload, "retain": retain, "qos": 0},
-                            timeout=aiohttp.ClientTimeout(total=15),
-                        ) as r:
-                            if r.status < 400:
-                                break
+                if not self.healthy:
+                    continue  # the bridge is switching back to plain states; drop the backlog
+                try:
+                    async with self._http.post(
+                        f"{SUPERVISOR_URL}/core/api/services/mqtt/publish",
+                        json={"topic": topic, "payload": payload, "retain": retain, "qos": 0},
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as r:
+                        if r.status < 400:
+                            self.failures = 0
+                        else:
+                            self.failures += 1
                             _LOGGER.debug("mqtt.publish %s -> HTTP %s", topic, r.status)
-                    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                        _LOGGER.debug("mqtt.publish %s failed: %s", topic, err)
-                    await asyncio.sleep(2 * (attempt + 1))
+                except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                    self.failures += 1
+                    _LOGGER.debug("mqtt.publish %s failed: %s", topic, err)
             finally:
                 self._queue.task_done()
 
