@@ -364,6 +364,7 @@ class DockerManager:
             "last_check": self.state.get("last_check"),
             "last_update": self.state.get("last_update"),
             "running_job": self.state.get("running"),
+            "names": {c["id"]: c["name"] for c in items},  # lets GPU process owners show a name
         }
 
     def status(self) -> Dict[str, Any]:

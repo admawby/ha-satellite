@@ -215,6 +215,11 @@ Home Assistant gets per GPU a usage sensor plus temperature, VRAM and power sens
 available, e.g. `sensor.hasat_plexer_gpu_nvidia0_usage` or `sensor.hasat_plexer_gpu_intel0_usage`
 (`vendor` + number, so IDs stay stable). Intel usage is measured between two polls, like CPU usage.
 
+Engine chips (encoder, decoder, video, …) only appear while that engine is busy. Usage is the
+main compute/3D load, so a GPU can show 100% usage with no engine chips, e.g. an AI model or a
+CUDA filter. To see what that work is, the card lists **the processes using each NVIDIA GPU**
+with their VRAM and the Docker container or system service they belong to.
+
 **History at a click.** In the Satellites page, values that have a Home Assistant entity
 are clickable and open Home Assistant's own pop-up with the history graph. Hover them to
 see the entity ID. That covers CPU temperature, CPU, memory, disk, load, uptime,

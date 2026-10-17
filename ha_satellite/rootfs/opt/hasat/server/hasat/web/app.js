@@ -396,8 +396,14 @@ function gpuCard(s) {
         const k = `gpu_${g.key}`;
         // Integrated GPUs share the CPU's sensor: show that reading, labelled as such.
         const temp = g.temp != null ? g.temp : g.temp_shared ? (s.metrics || {}).cpu_temp : null;
-        const engines = Object.entries(g.engines || {});
-        const extra = [g.freq_mhz != null ? `${Math.round(g.freq_mhz)}${g.freq_max_mhz ? ` / ${g.freq_max_mhz}` : ""} MHz` : "",
+        // Only engines doing something: a row of "0%" chips reads as "broken" when the GPU is busy
+        // with a different kind of work (e.g. compute vs. video encode/decode).
+        const engines = Object.entries(g.engines || {}).filter(([, v]) => v >= 0.5);
+        const idle = g.vendor === "intel" && g.freq_mhz === 0;  // clock gated (RC6) = nothing running
+        const clock = idle ? "idle (power saving)"
+          : g.freq_mhz != null ? `${Math.round(g.freq_mhz)}${g.freq_max_mhz ? ` / ${g.freq_max_mhz}` : ""} MHz` : "";
+        const procs = g.processes || [];
+        const extra = [clock,
           g.fan != null ? `fan ${Math.round(g.fan)}%` : ""].filter(Boolean).join(" · ");
         return `
         <div class="gpu">
@@ -412,6 +418,10 @@ function gpuCard(s) {
               <div class="l">Power${g.power_limit ? ` of ${Math.round(g.power_limit)} W` : ""}</div></div>` : ""}
           </div>
           ${engines.length ? `<div class="chips">${engines.map(([e, v]) => `<span class="chip ${level(v, 80, 95)}">${esc(ENGINE_LABEL[e] || e)} ${Math.round(v)}%</span>`).join("")}</div>` : ""}
+          ${procs.length ? `<div class="gpu-procs"><span class="muted">Used by</span>${procs.map((p) => {
+            const owner = p.container ? `container ${p.container}` : p.container_id ? `container ${p.container_id}` : p.service ? `service ${p.service}` : "";
+            return `<span class="chip" title="PID ${p.pid}">${esc(p.name)}${owner ? ` · ${esc(owner)}` : ""}${p.mem_used ? ` · ${fmtBytes(p.mem_used)}` : ""}</span>`;
+          }).join("")}</div>` : ""}
         </div>`;
       }).join("")}
     </div>`;

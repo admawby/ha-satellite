@@ -7,8 +7,19 @@ import json
 import subprocess
 from typing import Callable
 
-NVIDIA_LINE = ("0, NVIDIA RTX 2000E Ada Generation, 00000000:01:00.0, 37, 12, 25, 42, 4782, 16380, "
+UUID = "GPU-2b9b7c1e-0d4f-4a57-9e2a-5c2d1f0e8a11"
+NVIDIA_LINE = (f"0, NVIDIA RTX 2000E Ada Generation, {UUID}, 00000000:01:00.0, 37, 12, 25, 42, 4782, 16380, "
                "18.44, 50.00, 30, 1710\n")
+# --query-compute-apps output (shape from the real host): a containerised python, a host ffmpeg
+# run by a systemd service, and a snap.
+NVIDIA_APPS = (f"{UUID}, 4101, /opt/venv/bin/python, 8420\n"
+               f"{UUID}, 4202, /usr/lib/jellyfin-ffmpeg/ffmpeg, 864\n"
+               f"{UUID}, 4303, Plex Transcoder, 312\n")
+CGROUPS = {
+    4101: "0::/system.slice/docker-ab12cd34ef56" + "0" * 52 + ".scope",
+    4202: "0::/system.slice/jellyfin.service",
+    4303: "0::/system.slice/snap.plexmediaserver.plexmediaserver.service",
+}
 
 
 def run(check: Callable[[bool, str], None], sat) -> None:
@@ -16,17 +27,25 @@ def run(check: Callable[[bool, str], None], sat) -> None:
     from hasat_agent import gpu
 
     # --- NVIDIA via nvidia-smi
-    real_which, real_run = gpu.shutil.which, gpu.subprocess.run
+    real_which, real_run, real_read = gpu.shutil.which, gpu.subprocess.run, gpu._read
     gpu.shutil.which = lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
-    gpu.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, NVIDIA_LINE, "")
+    gpu.subprocess.run = lambda cmd, **k: subprocess.CompletedProcess(
+        cmd, 0, NVIDIA_APPS if any("compute-apps" in c for c in cmd) else NVIDIA_LINE, "")
+    gpu._read = lambda path: next((v for pid, v in CGROUPS.items() if path == f"/proc/{pid}/cgroup"), None)
     try:
         n = gpu.nvidia()
     finally:
-        gpu.shutil.which, gpu.subprocess.run = real_which, real_run
+        gpu.shutil.which, gpu.subprocess.run, gpu._read = real_which, real_run, real_read
     g = n[0]
     check(g["name"] == "NVIDIA RTX 2000E Ada Generation" and g["usage"] == 37 and g["temp"] == 42
           and g["power"] == 18.44 and g["engines"] == {"encoder": 12, "decoder": 25},
           "gpu: nvidia-smi parsed (usage, temp, power, encoder/decoder)")
+    procs = g["processes"]
+    check([p["name"] for p in procs] == ["python", "ffmpeg", "Plex Transcoder"] and procs[0]["mem_used"] == 8420 * 1024 * 1024,
+          "gpu: NVIDIA processes listed, biggest VRAM user first")
+    check(procs[0].get("container_id") == "ab12cd34ef56" and procs[1].get("service") == "jellyfin"
+          and procs[2].get("service") == "plexmediaserver",
+          "gpu: process owners resolved from cgroups (Docker container, systemd service, snap)")
     check(g["mem_total"] == 16380 * 1024 * 1024 and g["pci"] == "0000:01:00.0", "gpu: NVIDIA VRAM and PCI address")
 
     # --- Intel: busy-time counters -> utilisation between two reads

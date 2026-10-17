@@ -101,7 +101,13 @@ class Agent:
     async def h_status(self, _r: web.Request) -> web.Response:
         loop = asyncio.get_running_loop()
         data = await loop.run_in_executor(None, self.status)
-        data["docker"] = await self.docker.summary()
+        docker = await self.docker.summary()
+        names = docker.pop("names", {})
+        for gpu in data.get("gpus") or []:
+            for proc in gpu.get("processes") or []:
+                if proc.get("container_id") in names:
+                    proc["container"] = names[proc["container_id"]]
+        data["docker"] = docker
         return web.json_response(data)
 
     # ------------------------------------------------------- files / storage

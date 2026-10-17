@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.1
+
+- Graphics card shows **what is using each NVIDIA GPU**: process, VRAM, and the Docker container
+  or system service it belongs to (e.g. `python · container scenefilter · 8.2 GB`)
+- Engine chips (encoder, decoder, video, …) appear only while that engine is busy, so a GPU
+  doing compute work no longer shows a row of misleading 0% chips
+- An idle Intel GPU shows "idle (power saving)" instead of "0 / 1150 MHz"
+
 ## 0.12.0
 
 - **History graphs** on the Overview tab: temperatures (CPU + GPUs), graphics memory, disk usage

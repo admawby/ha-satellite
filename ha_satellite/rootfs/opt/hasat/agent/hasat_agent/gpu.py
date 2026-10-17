@@ -20,6 +20,7 @@ import glob
 import logging
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -89,7 +90,7 @@ def _drm_cards() -> List[Tuple[str, str, str]]:
 
 
 # --------------------------------------------------------------- NVIDIA
-NVIDIA_FIELDS = ("index", "name", "pci.bus_id", "utilization.gpu", "utilization.encoder", "utilization.decoder",
+NVIDIA_FIELDS = ("index", "name", "uuid", "pci.bus_id", "utilization.gpu", "utilization.encoder", "utilization.decoder",
                  "temperature.gpu", "memory.used", "memory.total", "power.draw", "power.limit", "fan.speed",
                  "clocks.gr")
 
@@ -104,21 +105,65 @@ def _num(v: str) -> Optional[float]:
         return None
 
 
-def nvidia() -> List[Dict[str, Any]]:
-    exe = shutil.which("nvidia-smi")
-    cmd = ["nvidia-smi", f"--query-gpu={','.join(NVIDIA_FIELDS)}", "--format=csv,noheader,nounits"]
-    if not exe:
+def _smi(args: List[str]) -> Optional[str]:
+    """Run nvidia-smi on the host (through nsenter in container mode)."""
+    cmd = ["nvidia-smi"] + args
+    if not shutil.which("nvidia-smi"):
         if os.environ.get("HASAT_MODE") != "container":
-            return []
-        cmd = host_cmd(["sh", "-c", "command -v nvidia-smi >/dev/null && exec " + " ".join(cmd)])
+            return None
+        cmd = host_cmd(["sh", "-c", "command -v nvidia-smi >/dev/null && exec " + " ".join(shlex.quote(a) for a in cmd)])
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
     except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+_DOCKER_ID = re.compile(r"(?:docker[-/]|cri-containerd-|libpod-)([0-9a-f]{64})")
+_SERVICE = re.compile(r"/([^/]+)\.service$")
+
+
+def process_owner(pid: int) -> Dict[str, str]:
+    """Docker container id or systemd service a process belongs to (from its cgroup)."""
+    raw = _read(f"/proc/{pid}/cgroup") or ""
+    m = _DOCKER_ID.search(raw)
+    if m:
+        return {"container_id": m.group(1)[:12]}
+    for line in raw.splitlines():
+        sm = _SERVICE.search(line.strip())
+        if sm and not sm.group(1).startswith(("user@", "session-")):
+            name = sm.group(1)
+            if name.startswith("snap."):  # snap.plexmediaserver.plexmediaserver -> plexmediaserver
+                name = name.split(".")[1]
+            return {"service": name}
+    return {}
+
+
+def nvidia_processes() -> Dict[str, List[Dict[str, Any]]]:
+    """{gpu uuid: [{pid, name, mem_used, container_id|service}]} for processes using each GPU."""
+    out = _smi(["--query-compute-apps=gpu_uuid,pid,process_name,used_memory", "--format=csv,noheader,nounits"])
+    procs: Dict[str, List[Dict[str, Any]]] = {}
+    for line in (out or "").strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 4 or not parts[1].isdigit():
+            continue
+        uuid, pid, mem = parts[0], int(parts[1]), _num(parts[-1])
+        name = os.path.basename(", ".join(parts[2:-1]))
+        entry: Dict[str, Any] = {"pid": pid, "name": name, "mem_used": int(mem * 1024 * 1024) if mem is not None else None}
+        entry.update(process_owner(pid))
+        procs.setdefault(uuid, []).append(entry)
+    for lst in procs.values():
+        lst.sort(key=lambda e: -(e["mem_used"] or 0))
+    return procs
+
+
+def nvidia() -> List[Dict[str, Any]]:
+    out = _smi([f"--query-gpu={','.join(NVIDIA_FIELDS)}", "--format=csv,noheader,nounits"])
+    if out is None:
         return []
-    if proc.returncode != 0:
-        return []
+    procs = nvidia_processes()
     gpus = []
-    for line in proc.stdout.strip().splitlines():
+    for line in out.strip().splitlines():
         f = dict(zip(NVIDIA_FIELDS, [p.strip() for p in line.split(",")]))
         if len(f) < len(NVIDIA_FIELDS):
             continue
@@ -137,6 +182,7 @@ def nvidia() -> List[Dict[str, Any]]:
             "power_limit": _num(f["power.limit"]),
             "fan": _num(f["fan.speed"]),
             "freq_mhz": _num(f["clocks.gr"]),
+            "processes": procs.get(f["uuid"], []),
         })
     return gpus
 

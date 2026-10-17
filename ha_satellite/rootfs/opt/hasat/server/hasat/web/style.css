@@ -181,3 +181,4 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 .hist-table td:first-child a { color: var(--text); text-decoration: none; }
 .seg { display: flex; gap: 4px; }
 @media (max-width: 520px) { .hist-grid { grid-template-columns: 1fr; } }
+.gpu-procs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; }
